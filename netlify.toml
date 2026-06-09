@@ -1,0 +1,17 @@
+# Netlify serves the prebuilt files in /public. The GitHub Action regenerates
+# public/index.html every 15 min and deploys it, so Netlify itself does no build.
+[build]
+  publish = "public"
+  command = ""
+
+# Never cache the HTML (so the friend always gets the freshest deploy);
+# cache the icons/manifest aggressively since they rarely change.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-store, max-age=0"
+
+[[headers]]
+  for = "/*.png"
+  [headers.values]
+    Cache-Control = "public, max-age=86400"

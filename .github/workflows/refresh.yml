@@ -1,0 +1,40 @@
+name: Refresh & deploy dashboard
+
+# Regenerates the dashboard in the cloud and deploys to Netlify.
+# Runs on a schedule (independent of your laptop), on manual trigger, and on push.
+on:
+  schedule:
+    - cron: "*/15 * * * *"      # every 15 min (GitHub may delay a few min under load)
+  workflow_dispatch:            # lets you run it on demand from the Actions tab
+  push:
+    branches: [ main ]
+
+# Avoid overlapping runs if one is slow.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Generate dashboard HTML
+        env:
+          DASH_OUT: public/index.html   # write straight into the publish folder
+        run: python3 dashboard.py
+
+      - name: Deploy to Netlify
+        uses: nwtgck/actions-netlify@v3
+        with:
+          publish-dir: public
+          production-deploy: true
+          deploy-message: "Scheduled refresh ${{ github.run_number }}"
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
