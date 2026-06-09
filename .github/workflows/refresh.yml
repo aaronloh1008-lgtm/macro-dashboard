@@ -4,7 +4,7 @@ name: Refresh & deploy dashboard
 # Runs on a schedule (independent of your laptop), on manual trigger, and on push.
 on:
   schedule:
-    - cron: "*/15 * * * *"      # every 15 min (GitHub may delay a few min under load)
+    - cron: "*/5 * * * *"       # every 5 min (GitHub may delay a few min under load)
   workflow_dispatch:            # lets you run it on demand from the Actions tab
   push:
     branches: [ main ]

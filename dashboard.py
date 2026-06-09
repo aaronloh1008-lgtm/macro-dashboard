@@ -752,19 +752,27 @@ CLOCK_JS = """<script>
 function t(){document.getElementById('clk').textContent=
 new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 t();setInterval(t,1000);
-// Countdown to next refresh — anchored to THIS page's build time. Übersicht
-// regenerates the page on every refresh, so build-ts resets to "now" each time
-// the data actually updates; the countdown therefore restarts from 5:00 in
-// lockstep with real refreshes. Crucially it does NOT wrap with modulo: once it
-// reaches 0 it holds at "refreshing…" until the next real refresh lands. That
-// keeps it honest after sleep/wake or any late Übersicht tick (no phantom
-// 5:00→0:00 cycles with stale data).
+// Countdown — widget mode: count down; web mode: auto-reload every 5 min.
 (function(){
-  var INTERVAL=300; // seconds — Übersicht refreshFrequency / 1000
+  var el=document.getElementById('countdown');
+  var inFrame=window.self!==window.top;
+  if(!inFrame){
+    // Web: auto-reload the page every 5 min so fresh data is always shown
+    var RELOAD=300;
+    var secs=RELOAD;
+    function tick(){
+      if(secs<=0){ location.reload(); return; }
+      var m=Math.floor(secs/60), s=secs%60;
+      el.textContent='refresh in '+m+':'+(s<10?'0':'')+s;
+      secs--;
+    }
+    tick(); setInterval(tick,1000);
+    return;
+  }
+  var INTERVAL=300;
   var built=new Date(document.getElementById('built-ts').dataset.ts);
   function cd(){
     var rem=INTERVAL-Math.floor((Date.now()-built.getTime())/1000);
-    var el=document.getElementById('countdown');
     if(rem<=0){ el.textContent='refreshing…'; return; }
     var m=Math.floor(rem/60), s=rem%60;
     el.textContent=m+':'+(s<10?'0':'')+s;
