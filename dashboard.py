@@ -32,7 +32,8 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTM
 TIMEOUT = int(os.environ.get("DASH_TIMEOUT", "25"))
 RETRIES = int(os.environ.get("DASH_RETRIES", "2"))
 _SSL = ssl.create_default_context()
-NOW = datetime.now()
+from datetime import timedelta
+NOW = datetime.now(tz=timezone.utc) + timedelta(hours=8)  # SGT = UTC+8
 NOW_ISO = NOW.strftime("%Y-%m-%d %H:%M")
 NOW_TS  = NOW.strftime("%Y-%m-%dT%H:%M:%S")  # WebKit-safe ISO (countdown anchor)
 TODAY = date.today()
