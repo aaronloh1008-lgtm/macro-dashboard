@@ -447,6 +447,17 @@ def macro(label, fetch, fmt, *, kind="rate", target=None, sched="", quarterly=Fa
         sys.stderr.write(f"[{label}] {e}\n"); series = []
     if kind == "index_yoy": series = yoy_from_index(series)
     elif kind == "nfp_change": series = mom_change(series)
+    # If the release calendar already carries a newer actual than the value feed
+    # (FRED etc. lag the official press release by hours), splice it in so the value,
+    # month tag, "up from", estimate and release date all advance together. Auto-heals:
+    # once the feed catches up, its own point matches and this becomes a no-op.
+    if est_url and series:
+        try:
+            te_pt = te_latest_actual(est_url)
+            if te_pt and te_pt[0] > series[-1][0]:
+                series = series + [te_pt]
+        except Exception as e:
+            sys.stderr.write(f"[{label} te-splice] {e}\n")
     if not max_age:
         max_age = 200 if quarterly else 100   # strict: stale data is hidden, not shown
 
@@ -534,6 +545,29 @@ def te_consensus(url, ref_iso=""):
         if not want or r[1] == want:
             return r[4]                                      # consensus cell
     return released[-1][4] if released else ""
+
+def te_latest_actual(url):
+    """Latest already-released calendar row as (ref_iso, value), or None.
+    Used to splice a just-published figure into a slower value feed (FRED lags the
+    official press release by hours). ref_iso is the reference period's
+    first-of-month, derived from the release date + period label; value is parsed
+    from the Actual cell (handles %, K/M suffixes, commas, signs)."""
+    rows = te_calendar(url)
+    if not rows: return None
+    today = TODAY.isoformat()
+    released = [r for r in rows if r[0] <= today and r[2]]   # has an Actual
+    if not released: return None
+    rel_date, period, actual = released[-1][0], released[-1][1], released[-1][2]
+    m = re.search(r"-?\d+(?:\.\d+)?", actual.replace(",", ""))
+    rd = parse_iso(rel_date)
+    mon = _MON3.get(period[:3].upper())
+    if not (m and rd and mon): return None
+    val = float(m.group())
+    up = actual.upper()
+    if "K" in up: val *= 1_000
+    elif "M" in up: val *= 1_000_000
+    yr = rd.year - (1 if mon > rd.month else 0)
+    return (f"{yr}-{mon:02d}-01", val)
 
 def te_indicator(url):
     """Parse a Trading Economics headline indicator from the page's meta
