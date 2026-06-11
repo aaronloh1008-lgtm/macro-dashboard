@@ -4,7 +4,7 @@ name: Refresh & deploy dashboard
 # Runs on a schedule (independent of your laptop), on manual trigger, and on push.
 on:
   schedule:
-    - cron: "*/30 * * * *"      # every 30 min (lighter on Netlify credits than 5-min)
+    - cron: "0 * * * *"         # once an hour, on the hour
   workflow_dispatch:            # lets you run it on demand from the Actions tab
   push:
     branches: [ main ]
