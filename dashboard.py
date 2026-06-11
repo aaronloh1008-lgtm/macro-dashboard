@@ -830,8 +830,8 @@ t();setInterval(t,1000);
   var el=document.getElementById('countdown');
   var inFrame=window.self!==window.top;
   if(!inFrame){
-    // Web: auto-reload the page every 5 min so fresh data is always shown
-    var RELOAD=300;
+    // Web: auto-reload the page every 30 min so fresh data is always shown
+    var RELOAD=1800;
     var secs=RELOAD;
     function tick(){
       if(secs<=0){ location.reload(); return; }
