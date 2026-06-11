@@ -280,6 +280,11 @@ _SCHED_SLUG = {
     "bok":  "south-korea/interest-rate",
 }
 _CB_KEYS = {"fomc", "ecb", "boe", "boj", "bok"}
+# Rate rows whose TE decision calendar may be spliced into the BIS value when a
+# decision posts before BIS updates. ECB is excluded on purpose: its TE page tracks
+# the main-refi rate, but we display the BIS deposit rate (the headline policy rate).
+# Fed is handled in fed_rate() (range, not a single value).
+_RATE_SPLICE = {"boj", "bok", "boe"}
 _sched_cache = {}
 def sched_dates(key):
     """Sorted release/decision dates for a key, parsed from its TE calendar.
@@ -458,6 +463,15 @@ def macro(label, fetch, fmt, *, kind="rate", target=None, sched="", quarterly=Fa
                 series = series + [te_pt]
         except Exception as e:
             sys.stderr.write(f"[{label} te-splice] {e}\n")
+    # Policy-rate rows: splice a just-decided rate from the TE decision calendar when
+    # it post-dates the BIS value feed, so a hike/cut shows the moment it's decided.
+    if kind == "rate" and sched in _RATE_SPLICE and series:
+        try:
+            dec = te_decision_actual(_TE_BASE + _SCHED_SLUG[sched])
+            if dec and dec[0] > series[-1][0]:
+                series = series + [dec]
+        except Exception as e:
+            sys.stderr.write(f"[{label} rate-splice] {e}\n")
     if not max_age:
         max_age = 200 if quarterly else 100   # strict: stale data is hidden, not shown
 
@@ -569,6 +583,20 @@ def te_latest_actual(url):
     yr = rd.year - (1 if mon > rd.month else 0)
     return (f"{yr}-{mon:02d}-01", val)
 
+def te_decision_actual(url):
+    """Latest already-occurred rate decision as (date_iso, rate), or None. Keyed on
+    the decision DATE (rate decisions carry no monthly reference period). Used to
+    splice a just-decided policy rate into the slower BIS value feed."""
+    rows = te_calendar(url)
+    if not rows: return None
+    today = TODAY.isoformat()
+    dec = [r for r in rows if "interest rate" in (r[6] or "").lower()
+           and r[0] <= today and r[2]]                       # decided, has an Actual
+    if not dec: return None
+    date_iso, actual = dec[-1][0], dec[-1][2]
+    m = re.search(r"-?\d+(?:\.\d+)?", actual.replace(",", ""))
+    return (date_iso, float(m.group())) if m else None
+
 def te_indicator(url):
     """Parse a Trading Economics headline indicator from the page's meta
     description, e.g. 'Inflation Rate in Japan decreased to 1.40 percent in April
@@ -650,8 +678,18 @@ def fed_rate():
     is always 25bp wide, so midpoint ± 0.125 gives the bounds) — no slow FRED call."""
     last, _ = release_info("fomc")
     b = bis_series("US")
+    mid = bis_date = None
     if b and age_days(b[-1][0]) <= 120:
-        mid = b[-1][1]
+        mid, bis_date = b[-1][1], b[-1][0]
+    # Splice a just-decided FOMC rate if it post-dates BIS (TE Actual = upper bound;
+    # the range is always 25bp wide, so midpoint = upper − 0.125).
+    try:
+        dec = te_decision_actual(_TE_BASE + _SCHED_SLUG["fomc"])
+        if dec and (bis_date is None or dec[0] > bis_date):
+            mid = dec[1] - 0.125
+    except Exception as e:
+        sys.stderr.write(f"[Fed rate-splice] {e}\n")
+    if mid is not None:
         return {"label": "Fed Policy Rate", "disp": f"{mid-0.125:.2f}–{mid+0.125:.2f}%", "tag": "",
                 "date": pretty_date(last), "comment": next_note("fomc"), "source": "live"}
     return amber("Fed Policy Rate", "source unavailable")
