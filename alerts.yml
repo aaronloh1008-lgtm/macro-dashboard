@@ -1,0 +1,45 @@
+name: Policy alerts (Telegram)
+
+# Independent of the dashboard deploy: only scrapes Trading Economics and sends
+# Telegram nudges. Never deploys to Netlify, so it costs no Netlify credits.
+on:
+  schedule:
+    - cron: "*/5 * * * *"        # every 5 minutes
+  workflow_dispatch:             # manual run = connectivity test + "what's upcoming" digest
+
+# Don't let a slow run overlap the next tick.
+concurrency:
+  group: alerts
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No setup-python: the script is stdlib-only and the runner ships python3.
+
+      # Restore the dedup state from the previous run (most recent matching cache).
+      - name: Restore alert state
+        uses: actions/cache/restore@v4
+        with:
+          path: alerts_state.json
+          key: alerts-state-${{ github.run_id }}
+          restore-keys: |
+            alerts-state-
+
+      - name: Check schedule and send alerts
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+        run: python3 alerts.py
+
+      # Save the (possibly updated) state under a fresh key so the next run sees it.
+      - name: Save alert state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: alerts_state.json
+          key: alerts-state-${{ github.run_id }}
