@@ -5,7 +5,7 @@ name: Policy alerts (Telegram)
 on:
   schedule:
     - cron: "*/5 * * * *"        # every 5 minutes
-        - cron: "45 23 * * 0"        # Mon 7:45 AM SGT weekly digest
+    - cron: "45 23 * * 0"        # Mon 7:45 AM SGT weekly digest
   workflow_dispatch:             # manual run = connectivity test + "what's upcoming" digest
 
 # Don't let a slow run overlap the next tick.
@@ -35,7 +35,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-                    WEEKLY_DIGEST: ${{ github.event.schedule == '45 23 * * 0' && 'true' || '' }}
+          WEEKLY_DIGEST: ${{ github.event.schedule == '45 23 * * 0' && 'true' || '' }}
         run: python3 alerts.py
 
       # Save the (possibly updated) state under a fresh key so the next run sees it.
