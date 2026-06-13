@@ -6,8 +6,16 @@ build/deploy — it never touches Netlify, so it uses zero Netlify credits.
 
 For each tracked release it scrapes the Trading Economics calendar, reads the
 release time from the GMT column, and sends Telegram messages:
-  • nudges at  T-60 / T-15 / T-5 minutes before a scheduled release/decision
+  • nudges at  T-60 / T-5 minutes before a scheduled release/decision
   • an "actual released" alert when the figure prints (Actual cell fills in)
+
+Resilience:
+  • Every good scrape caches each event's upcoming schedule into the state file,
+    so if Trading Economics goes down the T-60/T-5 nudges keep firing off the
+    cache (release alerts need the live Actual, so they pause until TE recovers).
+  • If a whole run scrapes nothing for every tracked event, it sends one
+    "TE unreachable" warning — then stays quiet for FAIL_ALERT_COOLDOWN_H hours
+    so an outage pages you once, not every five minutes.
 
 Dedup is via alerts_state.json, persisted across runs by the GitHub Actions
 cache (see .github/workflows/alerts.yml) — so each nudge fires exactly once.
@@ -44,8 +52,9 @@ EVENTS = [
 ]
 
 THRESHOLDS = [(60, "1 hour"), (5, "5 minutes")]
-GRACE_MIN = 6          # fire a threshold only within ~one cron step past it
-RELEASE_WINDOW_H = 6   # send the "released" alert only within this long after print
+GRACE_MIN = 6              # fire a threshold only within ~one cron step past it
+RELEASE_WINDOW_H = 6       # send the "released" alert only within this long after print
+FAIL_ALERT_COOLDOWN_H = 24 # at most one "TE unreachable" warning per this many hours
 
 
 # ----------------------------------------------------------------- scraping
@@ -182,24 +191,63 @@ def load_state():
         with open(STATE_FILE) as f:
             return json.load(f)
     except Exception:
-        return {"sent": []}
+        return {}
 
 
-def save_state(order):
+def save_state(order, schedule, health):
     with open(STATE_FILE, "w") as f:
-        json.dump({"sent": order[-300:]}, f, indent=0)
+        json.dump({"sent": order[-300:], "schedule": schedule, "health": health},
+                  f, indent=0)
+
+
+def _parse_iso(s):
+    try:
+        return datetime.fromisoformat(s) if s else None
+    except Exception:
+        return None
 
 
 # ----------------------------------------------------------------- main
-def run_checks(order, seen):
-    """Send any due nudges / release alerts. Mutates order+seen; returns # sent."""
+def run_checks(order, seen, schedule):
+    """Send any due nudges / release alerts.
+
+    Mutates order/seen (dedup) and schedule (per-event forward cache). Returns
+    (sent_count, healthy_events), where healthy_events is how many tracked events
+    were scraped live and yielded at least one row — 0 means a total TE outage.
+    """
     sent_count = 0
+    healthy_events = 0
     for name, slug, is_cb in EVENTS:
         try:
             rows = event_rows(name, slug, is_cb)
+            live = True
         except Exception as e:
             sys.stderr.write(f"[{name}] fetch failed: {e}\n")
-            continue
+            rows, live = [], False
+
+        if live:
+            if rows:
+                healthy_events += 1
+            # Refresh this event's forward cache from the good scrape: keep only
+            # upcoming, time-stamped, not-yet-released rows for offline fallback.
+            cache = []
+            for d, t, _ev, ref, act, prev, cons in rows:
+                dt, has_time = release_dt(d, t)
+                if dt and has_time and not act and dt > NOW:
+                    cache.append([d, t, ref, prev, cons])
+            schedule[name] = cache
+        else:
+            # TE failed for this event — replay the cached forward schedule so the
+            # T-60/T-5 nudges still fire. Actual is unknown (""), so only the nudge
+            # branch runs; past entries are pruned as we go.
+            kept, rows = [], []
+            for d, t, ref, prev, cons in schedule.get(name, []):
+                dt, _ = release_dt(d, t)
+                if dt and dt > NOW:
+                    kept.append([d, t, ref, prev, cons])
+                    rows.append((d, t, "", ref, "", prev, cons))
+            schedule[name] = kept
+
         for date_iso, time_str, event, reference, actual, previous, consensus in rows:
             dt, has_time = release_dt(date_iso, time_str)
             if not dt:
@@ -222,7 +270,7 @@ def run_checks(order, seen):
                         if key not in seen:
                             if telegram(nudge_msg(name, lbl, dt, reference, previous, consensus)):
                                 seen.add(key); order.append(key); sent_count += 1
-    return sent_count
+    return sent_count, healthy_events
 
 
 def send_digest():
@@ -251,15 +299,30 @@ def main():
     state = load_state()
     order = list(state.get("sent", []))
     seen = set(order)
+    schedule = state.get("schedule", {})
+    health = state.get("health", {})
 
     if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" \
             or os.environ.get("ALERT_PING") \
             or os.environ.get("WEEKLY_DIGEST"):
         send_digest()
 
-    n = run_checks(order, seen)
-    save_state(order)
-    print(f"alerts: {n} sent" if n else "alerts: none due")
+    n, healthy = run_checks(order, seen, schedule)
+
+    # Total outage: nothing scraped for any tracked event this run. Warn once,
+    # then stay quiet for the cooldown so an outage pages you once, not 288x/day.
+    if healthy == 0:
+        last = _parse_iso(health.get("last_fail_alert"))
+        if last is None or (NOW - last) >= timedelta(hours=FAIL_ALERT_COOLDOWN_H):
+            if telegram("⚠️ <b>Alert bot:</b> Trading Economics unreachable — "
+                        "no events could be read this run. Nudges are running off "
+                        "the cached schedule; release alerts pause until TE recovers."):
+                health["last_fail_alert"] = NOW.isoformat()
+        print(f"alerts: TE outage (healthy=0); {n} sent")
+    else:
+        print(f"alerts: {n} sent" if n else "alerts: none due")
+
+    save_state(order, schedule, health)
 
 
 if __name__ == "__main__":
