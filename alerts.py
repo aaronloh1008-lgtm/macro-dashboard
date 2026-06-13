@@ -43,7 +43,7 @@ EVENTS = [
     ("BoK decision",        "south-korea/interest-rate",                   True),
 ]
 
-THRESHOLDS = [(60, "1 hour"), (15, "15 minutes"), (5, "5 minutes")]
+THRESHOLDS = [(60, "1 hour"), (5, "5 minutes")]
 GRACE_MIN = 6          # fire a threshold only within ~one cron step past it
 RELEASE_WINDOW_H = 6   # send the "released" alert only within this long after print
 
@@ -252,7 +252,9 @@ def main():
     order = list(state.get("sent", []))
     seen = set(order)
 
-    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" or os.environ.get("ALERT_PING"):
+    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" \
+            or os.environ.get("ALERT_PING") \
+            or os.environ.get("WEEKLY_DIGEST"):
         send_digest()
 
     n = run_checks(order, seen)
