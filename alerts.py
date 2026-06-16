@@ -6,7 +6,8 @@ build/deploy — it never touches Netlify, so it uses zero Netlify credits.
 
 For each tracked release it scrapes the Trading Economics calendar, reads the
 release time from the GMT column, and sends Telegram messages:
-  • nudges at  T-60 / T-5 minutes before a scheduled release/decision
+  • nudges at  T-24h / T-60min / T-5min before a scheduled release/decision
+    (each carries the market consensus + previous figure when TE has them)
   • an "actual released" alert when the figure prints (Actual cell fills in)
   • a Monday 7:45am SGT "week ahead" digest — every tracked release in the next
     7 days, grouped by day (a manual run sends a per-event connectivity digest)
@@ -15,9 +16,11 @@ Resilience:
   • Every good scrape caches each event's upcoming schedule into the state file,
     so if Trading Economics goes down the T-60/T-5 nudges keep firing off the
     cache (release alerts need the live Actual, so they pause until TE recovers).
-  • If a whole run scrapes nothing for every tracked event, it sends one
-    "TE unreachable" warning — then stays quiet for FAIL_ALERT_COOLDOWN_H hours
-    so an outage pages you once, not every five minutes.
+  • If a whole run scrapes nothing for every tracked event for OUTAGE_RUNS_BEFORE_ALERT
+    consecutive runs, it sends one "TE unreachable" warning (a one-off blip stays
+    silent), quiet thereafter for FAIL_ALERT_COOLDOWN_H hours. When TE recovers it
+    posts a "resolved" note, deletes the warning, and deletes that note next run —
+    so the channel self-cleans.
 
 Dedup is via alerts_state.json, persisted across runs by the GitHub Actions
 cache (see .github/workflows/alerts.yml) — so each nudge fires exactly once.
@@ -27,7 +30,7 @@ Secrets required (set as GitHub repo secrets, never in this file):
   TELEGRAM_CHAT_ID     your channel/chat id
 """
 
-import json, os, re, sys, urllib.request, urllib.parse
+import json, os, re, sys, time, urllib.request, urllib.parse
 from datetime import datetime, timezone, timedelta
 
 UTC = timezone.utc
@@ -65,19 +68,31 @@ EVENTS = [
     ("EZ GDP",              "euro-area/gdp-growth-annual",                 None),
 ]
 
-THRESHOLDS = [(60, "1 hour"), (5, "5 minutes")]
+THRESHOLDS = [(1440, "24 hours"), (60, "1 hour"), (5, "5 minutes")]
 GRACE_MIN = 6              # fire a threshold only within ~one cron step past it
 RELEASE_WINDOW_H = 6       # send the "released" alert only within this long after print
 FAIL_ALERT_COOLDOWN_H = 24 # at most one "TE unreachable" warning per this many hours
 EVENT_DARK_H = 24          # warn if ONE event yields no rows this long (slug/label drift).
                            # A healthy TE page always returns recent history, so a single
                            # event going dark while others work means that page changed.
+OUTAGE_RUNS_BEFORE_ALERT = 2  # only page on a TOTAL outage after this many consecutive
+                              # all-fail runs (~10 min) — a one-off blip stays silent.
 
 
 # ----------------------------------------------------------------- scraping
-def fetch(url):
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    return urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "replace")
+def fetch(url, retries=1):
+    """GET with one quick retry, so a single transient blip doesn't count as a
+    failure (keeps the bot quiet on momentary TE/network hiccups)."""
+    last = None
+    for attempt in range(retries + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            return urllib.request.urlopen(req, timeout=25).read().decode("utf-8", "replace")
+        except Exception as e:
+            last = e
+            if attempt < retries:
+                time.sleep(1.5)
+    raise last
 
 
 def calendar(url):
@@ -147,15 +162,36 @@ def telegram(text):
         req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
                                      data=data)
         with urllib.request.urlopen(req, timeout=20) as r:
-            return r.status == 200
+            body = json.loads(r.read().decode("utf-8", "replace"))
+            # Return the new message_id (truthy) on success so callers can later
+            # delete it; None on failure. `if telegram(...)` still works (id is truthy).
+            return body["result"]["message_id"] if body.get("ok") else None
     except Exception as e:
         sys.stderr.write(f"[telegram] send failed: {e}\n")
+        return None
+
+
+def telegram_delete(message_id):
+    """Delete a message the bot posted (used to clean up the outage / resolved
+    notices once TE recovers). Best-effort: failures are logged, not raised."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat or not message_id:
+        return False
+    data = urllib.parse.urlencode({"chat_id": chat, "message_id": message_id}).encode()
+    try:
+        req = urllib.request.Request(f"https://api.telegram.org/bot{token}/deleteMessage",
+                                     data=data)
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status == 200
+    except Exception as e:
+        sys.stderr.write(f"[telegram] delete failed: {e}\n")
         return False
 
 
 def fmt_when(dt):
     sgt = dt.astimezone(SGT)
-    return f"{dt:%b %-d, %H:%M} GMT ({sgt:%b %-d, %H:%M} SGT)"
+    return f"{sgt:%b %-d, %H:%M} SGT"
 
 
 def fmt_eta(dt):
@@ -317,9 +353,9 @@ def send_digest():
 
 
 def fmt_clock(dt):
-    """Just the time, both zones — for the day-grouped week-ahead list."""
+    """Just the time in SGT — for the day-grouped week-ahead list."""
     sgt = dt.astimezone(SGT)
-    return f"{sgt:%H:%M} SGT / {dt:%H:%M} GMT"
+    return f"{sgt:%H:%M} SGT"
 
 
 def send_week_ahead(days=7):
@@ -381,20 +417,38 @@ def main():
 
     n, healthy = run_checks(order, seen, schedule, health)
 
-    # Total outage: nothing scraped for any tracked event this run. Warn once,
-    # then stay quiet for the cooldown so an outage pages you once, not 288x/day.
+    # Total outage: nothing scraped for any tracked event this run. Only page after
+    # OUTAGE_RUNS_BEFORE_ALERT consecutive all-fail runs (a one-off blip stays silent,
+    # the cache fallback covers it), then stay quiet for the cooldown.
     if healthy == 0:
-        last = _parse_iso(health.get("last_fail_alert"))
-        if last is None or (NOW - last) >= timedelta(hours=FAIL_ALERT_COOLDOWN_H):
-            if telegram("⚠️ <b>Alert bot:</b> Trading Economics unreachable — "
-                        "no events could be read this run. Nudges are running off "
-                        "the cached schedule; release alerts pause until TE recovers."):
-                health["last_fail_alert"] = NOW.isoformat()
-        print(f"alerts: TE outage (healthy=0); {n} sent")
+        streak = health.get("outage_streak", 0) + 1
+        health["outage_streak"] = streak
+        if streak >= OUTAGE_RUNS_BEFORE_ALERT:
+            last = _parse_iso(health.get("last_fail_alert"))
+            if last is None or (NOW - last) >= timedelta(hours=FAIL_ALERT_COOLDOWN_H):
+                mid = telegram("⚠️ <b>Alert bot:</b> Trading Economics has been unreachable "
+                               f"for {streak} runs (~{streak * 5} min). Nudges are running off "
+                               "the cached schedule; release alerts pause until TE recovers.")
+                if mid:
+                    health["last_fail_alert"] = NOW.isoformat()
+                    health["outage_msg_id"] = mid
+        print(f"alerts: TE outage (healthy=0, streak={streak}); {n} sent")
     else:
-        # Not an outage, so check for a SINGLE event silently gone dark — a healthy
-        # TE page always returns recent history, so one event yielding no rows for
-        # EVENT_DARK_H means its slug/label likely changed and needs maintenance.
+        health["outage_streak"] = 0          # any healthy run clears the streak
+        if health.get("outage_msg_id"):
+            # Recovered from an alerted outage: post a 'resolved' note, delete the
+            # original warning, and queue the resolved note itself for deletion next
+            # run — so both vanish from the channel and it ends up clean.
+            rid = telegram("✅ <b>Alert bot:</b> Trading Economics is back — alerts resumed.")
+            telegram_delete(health.pop("outage_msg_id"))
+            health.pop("last_fail_alert", None)        # clear cooldown for any future outage
+            if rid:
+                health["resolved_msg_id"] = rid
+        elif health.get("resolved_msg_id"):
+            telegram_delete(health.pop("resolved_msg_id"))
+        # Check for a SINGLE event silently gone dark — a healthy TE page always
+        # returns recent history, so one event yielding no rows for EVENT_DARK_H
+        # means its slug/label likely changed and needs maintenance.
         check_dark_events(health)
         print(f"alerts: {n} sent" if n else "alerts: none due")
 
