@@ -4,9 +4,11 @@ name: Policy alerts (Telegram)
 # Telegram nudges. Never deploys to Netlify, so it costs no Netlify credits.
 on:
   schedule:
-    - cron: "*/5 * * * *"        # every 5 minutes
+    - cron: "*/5 * * * *"        # every 5 minutes (GitHub best-effort; often skips; see repository_dispatch)
     - cron: "45 23 * * 0"        # Mon 7:45 AM SGT weekly digest
   workflow_dispatch:             # manual run = connectivity test + "what's upcoming" digest
+  repository_dispatch:           # reliable external 5-min heartbeat (e.g. cron-job.org); GitHub's
+    types: [tick]                # own scheduler de-prioritises low-traffic repos and skips ticks for hours
 
 # Don't let a slow run overlap the next tick.
 concurrency:
