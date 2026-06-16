@@ -8,6 +8,8 @@ For each tracked release it scrapes the Trading Economics calendar, reads the
 release time from the GMT column, and sends Telegram messages:
   • nudges at  T-60 / T-5 minutes before a scheduled release/decision
   • an "actual released" alert when the figure prints (Actual cell fills in)
+  • a Monday 7:45am SGT "week ahead" digest — every tracked release in the next
+    7 days, grouped by day (a manual run sends a per-event connectivity digest)
 
 Resilience:
   • Every good scrape caches each event's upcoming schedule into the state file,
@@ -37,24 +39,39 @@ TE_BASE = "https://tradingeconomics.com/"
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/124 Safari/537.36")
 
-# (display name, TE slug, is_central_bank). Central-bank pages mix in projections /
-# minutes / votes, so those are filtered to genuine "interest rate decision" rows.
+# (display name, TE slug, decision_kw). decision_kw is None for data releases;
+# for central-bank pages it's the event-row substring that isolates genuine rate
+# decisions (the pages also mix in projections / minutes / votes / speeches).
+# ECB is special: its main-refi "interest-rate" page lists no FUTURE decisions, so
+# we read the DEPOSIT-facility page (which does) and match its "deposit facility" rows.
 EVENTS = [
-    ("US CPI",              "united-states/inflation-cpi",                 False),
-    ("US PCE",              "united-states/pce-price-index-annual-change", False),
-    ("US GDP",              "united-states/gdp-growth",                    False),
-    ("US Nonfarm Payrolls", "united-states/non-farm-payrolls",             False),
-    ("Fed decision",        "united-states/interest-rate",                 True),
-    ("ECB decision",        "euro-area/interest-rate",                     True),
-    ("BoE decision",        "united-kingdom/interest-rate",                True),
-    ("BoJ decision",        "japan/interest-rate",                         True),
-    ("BoK decision",        "south-korea/interest-rate",                   True),
+    ("US CPI",              "united-states/inflation-cpi",                 None),
+    ("US PCE",              "united-states/pce-price-index-annual-change", None),
+    ("US GDP",              "united-states/gdp-growth",                    None),
+    ("US Nonfarm Payrolls", "united-states/non-farm-payrolls",             None),
+    ("Fed decision",        "united-states/interest-rate",                 "interest rate decision"),
+    ("ECB decision",        "euro-area/deposit-interest-rate",             "deposit facility"),
+    ("BoE decision",        "united-kingdom/interest-rate",                "interest rate decision"),
+    ("BoJ decision",        "japan/interest-rate",                         "interest rate decision"),
+    ("BoK decision",        "south-korea/interest-rate",                   "interest rate decision"),
+    # Other dashboard data releases — full nudges + week-ahead. (US unemployment is
+    # omitted: it prints on the same jobs report as Nonfarm Payrolls, so it would
+    # double-nudge at the identical minute.)
+    ("UK CPI",              "united-kingdom/inflation-cpi",                None),
+    ("EZ HICP",             "euro-area/inflation-cpi",                     None),
+    ("Japan CPI",           "japan/inflation-cpi",                         None),
+    ("EZ Unemployment",     "euro-area/unemployment-rate",                 None),
+    ("UK Unemployment",     "united-kingdom/unemployment-rate",            None),
+    ("EZ GDP",              "euro-area/gdp-growth-annual",                 None),
 ]
 
 THRESHOLDS = [(60, "1 hour"), (5, "5 minutes")]
 GRACE_MIN = 6              # fire a threshold only within ~one cron step past it
 RELEASE_WINDOW_H = 6       # send the "released" alert only within this long after print
 FAIL_ALERT_COOLDOWN_H = 24 # at most one "TE unreachable" warning per this many hours
+EVENT_DARK_H = 24          # warn if ONE event yields no rows this long (slug/label drift).
+                           # A healthy TE page always returns recent history, so a single
+                           # event going dark while others work means that page changed.
 
 
 # ----------------------------------------------------------------- scraping
@@ -82,10 +99,10 @@ def calendar(url):
     return out
 
 
-def event_rows(name, slug, is_cb):
+def event_rows(name, slug, decision_kw):
     rows = calendar(TE_BASE + slug)
-    if is_cb:
-        rows = [r for r in rows if "interest rate decision" in r[2].lower()]
+    if decision_kw:
+        rows = [r for r in rows if decision_kw in r[2].lower()]
     return rows
 
 
@@ -208,18 +225,20 @@ def _parse_iso(s):
 
 
 # ----------------------------------------------------------------- main
-def run_checks(order, seen, schedule):
+def run_checks(order, seen, schedule, health=None):
     """Send any due nudges / release alerts.
 
-    Mutates order/seen (dedup) and schedule (per-event forward cache). Returns
+    Mutates order/seen (dedup) and schedule (per-event forward cache); when a
+    `health` dict is given, stamps health["events"][name] each time an event
+    scrapes live rows (used for per-event "went dark" detection). Returns
     (sent_count, healthy_events), where healthy_events is how many tracked events
     were scraped live and yielded at least one row — 0 means a total TE outage.
     """
     sent_count = 0
     healthy_events = 0
-    for name, slug, is_cb in EVENTS:
+    for name, slug, decision_kw in EVENTS:
         try:
-            rows = event_rows(name, slug, is_cb)
+            rows = event_rows(name, slug, decision_kw)
             live = True
         except Exception as e:
             sys.stderr.write(f"[{name}] fetch failed: {e}\n")
@@ -228,6 +247,8 @@ def run_checks(order, seen, schedule):
         if live:
             if rows:
                 healthy_events += 1
+                if health is not None:
+                    health.setdefault("events", {})[name] = NOW.isoformat()
             # Refresh this event's forward cache from the good scrape: keep only
             # upcoming, time-stamped, not-yet-released rows for offline fallback.
             cache = []
@@ -276,9 +297,9 @@ def run_checks(order, seen, schedule):
 def send_digest():
     """Manual-trigger connectivity test: the next upcoming item per tracked event."""
     items = []
-    for name, slug, is_cb in EVENTS:
+    for name, slug, decision_kw in EVENTS:
         try:
-            rows = event_rows(name, slug, is_cb)
+            rows = event_rows(name, slug, decision_kw)
         except Exception:
             continue
         upcoming = []
@@ -295,6 +316,53 @@ def send_digest():
     telegram("🔔 <b>Macro alert bot connected.</b>\nUpcoming:\n" + body)
 
 
+def fmt_clock(dt):
+    """Just the time, both zones — for the day-grouped week-ahead list."""
+    sgt = dt.astimezone(SGT)
+    return f"{sgt:%H:%M} SGT / {dt:%H:%M} GMT"
+
+
+def send_week_ahead(days=7):
+    """Monday digest: every tracked release scheduled in the next `days` days,
+    sorted chronologically and grouped by SGT calendar day — a single
+    consolidated 'week ahead' rather than one line per event."""
+    horizon = NOW + timedelta(days=days)
+    items = []
+    for name, slug, decision_kw in EVENTS:
+        try:
+            rows = event_rows(name, slug, decision_kw)
+        except Exception:
+            continue
+        for date_iso, time_str, event, reference, actual, previous, consensus in rows:
+            dt, has_time = release_dt(date_iso, time_str)
+            if dt and not actual and NOW <= dt <= horizon:
+                items.append((dt, has_time, name, reference, previous, consensus))
+    items.sort(key=lambda x: x[0])
+    if not items:
+        telegram("🗓️ <b>Week ahead</b> — no tracked macro releases in the next 7 days.")
+        return
+    lines = ["🗓️ <b>Week ahead — macro releases (next 7 days)</b>"]
+    cur_day = None
+    for dt, has_time, name, reference, previous, consensus in items:
+        day = dt.astimezone(SGT).strftime("%a %-d %b")
+        if day != cur_day:
+            lines.append(f"\n<b>{day}</b>")
+            cur_day = day
+        line = f"• <b>{esc(name)}</b>"
+        if reference:
+            line += f" ({esc(reference)})"
+        line += f" — {fmt_clock(dt) if has_time else 'time TBC'}"
+        extra = []
+        if consensus:
+            extra.append(f"est {esc(consensus)}")
+        if previous:
+            extra.append(f"prev {esc(previous)}")
+        if extra:
+            line += " · " + " · ".join(extra)
+        lines.append(line)
+    telegram("\n".join(lines))
+
+
 def main():
     state = load_state()
     order = list(state.get("sent", []))
@@ -302,12 +370,16 @@ def main():
     schedule = state.get("schedule", {})
     health = state.get("health", {})
 
-    if os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" \
-            or os.environ.get("ALERT_PING") \
-            or os.environ.get("WEEKLY_DIGEST"):
+    # Monday 7:45am SGT cron -> consolidated "week ahead". A manual run (or an
+    # ALERT_PING) instead sends the per-event connectivity digest, so a manual
+    # trigger still confirms every tracked page is scraping.
+    if os.environ.get("WEEKLY_DIGEST"):
+        send_week_ahead()
+    elif os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch" \
+            or os.environ.get("ALERT_PING"):
         send_digest()
 
-    n, healthy = run_checks(order, seen, schedule)
+    n, healthy = run_checks(order, seen, schedule, health)
 
     # Total outage: nothing scraped for any tracked event this run. Warn once,
     # then stay quiet for the cooldown so an outage pages you once, not 288x/day.
@@ -320,9 +392,39 @@ def main():
                 health["last_fail_alert"] = NOW.isoformat()
         print(f"alerts: TE outage (healthy=0); {n} sent")
     else:
+        # Not an outage, so check for a SINGLE event silently gone dark — a healthy
+        # TE page always returns recent history, so one event yielding no rows for
+        # EVENT_DARK_H means its slug/label likely changed and needs maintenance.
+        check_dark_events(health)
         print(f"alerts: {n} sent" if n else "alerts: none due")
 
     save_state(order, schedule, health)
+
+
+def check_dark_events(health):
+    """Warn (once per cooldown, per event) about any tracked event that hasn't
+    produced calendar rows for EVENT_DARK_H — the signal that one TE page changed
+    while the rest are fine. A never-seen event is seeded 'now' so it gets a full
+    grace window before it can warn (covers a freshly added or briefly-down page)."""
+    events_h = health.setdefault("events", {})
+    alerts_h = health.setdefault("event_alerts", {})
+    dark = []
+    for name, slug, decision_kw in EVENTS:
+        last_ok = _parse_iso(events_h.get(name))
+        if last_ok is None:
+            events_h[name] = NOW.isoformat()
+            continue
+        if (NOW - last_ok) >= timedelta(hours=EVENT_DARK_H):
+            last_warn = _parse_iso(alerts_h.get(name))
+            if last_warn is None or (NOW - last_warn) >= timedelta(hours=FAIL_ALERT_COOLDOWN_H):
+                dark.append(name)
+    if dark:
+        names = ", ".join(esc(d) for d in dark)
+        if telegram(f"⚠️ <b>Alert bot:</b> no calendar rows for <b>{names}</b> in over "
+                    f"{EVENT_DARK_H}h, while other events are fine — that page's slug or "
+                    "event label likely changed on Trading Economics and needs a fix."):
+            for d in dark:
+                alerts_h[d] = NOW.isoformat()
 
 
 if __name__ == "__main__":
