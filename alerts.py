@@ -247,9 +247,10 @@ def load_state():
         return {}
 
 
-def save_state(order, schedule, health):
+def save_state(order, schedule, health, nudge_msg_ids):
     with open(STATE_FILE, "w") as f:
-        json.dump({"sent": order[-300:], "schedule": schedule, "health": health},
+        json.dump({"sent": order[-300:], "schedule": schedule, "health": health,
+                   "nudge_msg_ids": nudge_msg_ids},
                   f, indent=0)
 
 
@@ -261,7 +262,7 @@ def _parse_iso(s):
 
 
 # ----------------------------------------------------------------- main
-def run_checks(order, seen, schedule, health=None):
+def run_checks(order, seen, schedule, health=None, nudge_msg_ids=None):
     """Send any due nudges / release alerts.
 
     Mutates order/seen (dedup) and schedule (per-event forward cache); when a
@@ -317,6 +318,10 @@ def run_checks(order, seen, schedule, health=None):
                 if key not in seen:
                     if telegram(release_msg(name, dt, reference, actual, previous, consensus)):
                         seen.add(key); order.append(key); sent_count += 1
+                        if nudge_msg_ids is not None:
+                            ev_key = f"{name}|{date_iso}"
+                            for mid in nudge_msg_ids.pop(ev_key, []):
+                                telegram_delete(mid)
 
             # --- upcoming: nudge before an unreleased, time-stamped event ---
             if has_time and not actual:
@@ -325,8 +330,11 @@ def run_checks(order, seen, schedule, health=None):
                     if (thr - GRACE_MIN) < mins <= thr:
                         key = f"{name}|{date_iso}|{thr}"
                         if key not in seen:
-                            if telegram(nudge_msg(name, lbl, dt, reference, previous, consensus)):
+                            mid = telegram(nudge_msg(name, lbl, dt, reference, previous, consensus))
+                            if mid:
                                 seen.add(key); order.append(key); sent_count += 1
+                                if nudge_msg_ids is not None:
+                                    nudge_msg_ids.setdefault(f"{name}|{date_iso}", []).append(mid)
     return sent_count, healthy_events
 
 
@@ -405,6 +413,7 @@ def main():
     seen = set(order)
     schedule = state.get("schedule", {})
     health = state.get("health", {})
+    nudge_msg_ids = state.get("nudge_msg_ids", {})
 
     # Monday 7:45am SGT cron -> consolidated "week ahead". A manual run (or an
     # ALERT_PING) instead sends the per-event connectivity digest, so a manual
@@ -415,7 +424,7 @@ def main():
             or os.environ.get("ALERT_PING"):
         send_digest()
 
-    n, healthy = run_checks(order, seen, schedule, health)
+    n, healthy = run_checks(order, seen, schedule, health, nudge_msg_ids)
 
     # Total outage: nothing scraped for any tracked event this run. Only page after
     # OUTAGE_RUNS_BEFORE_ALERT consecutive all-fail runs (a one-off blip stays silent,
@@ -452,7 +461,7 @@ def main():
         check_dark_events(health)
         print(f"alerts: {n} sent" if n else "alerts: none due")
 
-    save_state(order, schedule, health)
+    save_state(order, schedule, health, nudge_msg_ids)
 
 
 def check_dark_events(health):
