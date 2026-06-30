@@ -1008,34 +1008,24 @@ CLOCK_JS = """<script>
 function t(){document.getElementById('clk').textContent=
 new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 t();setInterval(t,1000);
-// Countdown to next refresh — auto-detects the runtime so ONE file serves both:
-//  • Übersicht widget (rendered in an iframe): count down from 5:00, anchored to
-//    THIS page's build time. Übersicht regenerates the page on every refresh, so
-//    build-ts resets to "now" each time the data updates and the countdown restarts
-//    in lockstep. It does NOT modulo-wrap: at 0 it holds at "refreshing…" until the
-//    next real refresh (stays honest after sleep/wake or a late tick — no phantom
-//    5:00→0:00 cycles with stale data).
-//  • Plain web page (not framed): auto-reload every 60 min so fresh data is shown.
+// Countdown — anchored to this page's build timestamp in both modes:
+//  • Übersicht widget (inFrame): counts down, holds at "refreshing…" when done
+//    (Übersicht reloads the iframe itself — no location.reload() needed).
+//  • Web / PWA (not inFrame): same countdown, but fires location.reload() at 0
+//    so the browser fetches the freshly built page from GitHub Pages.
+//  Both modes stay honest after sleep/wake: no phantom resets.
 (function(){
   var el=document.getElementById('countdown');
   var inFrame=window.self!==window.top;
-  if(!inFrame){
-    var RELOAD=3600;
-    var secs=RELOAD;
-    function tick(){
-      if(secs<=0){ location.reload(); return; }
-      var m=Math.floor(secs/60), s=secs%60;
-      el.textContent=m+':'+(s<10?'0':'')+s;   // surrounding label already says "next refresh"
-      secs--;
-    }
-    tick(); setInterval(tick,1000);
-    return;
-  }
-  var INTERVAL=300; // seconds — Übersicht refreshFrequency / 1000
+  var INTERVAL=300;
   var built=new Date(document.getElementById('built-ts').dataset.ts);
   function cd(){
     var rem=INTERVAL-Math.floor((Date.now()-built.getTime())/1000);
-    if(rem<=0){ el.textContent='refreshing…'; return; }
+    if(rem<=0){
+      el.textContent='refreshing…';
+      if(!inFrame) location.reload();
+      return;
+    }
     var m=Math.floor(rem/60), s=rem%60;
     el.textContent=m+':'+(s<10?'0':'')+s;
   }
