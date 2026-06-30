@@ -8,7 +8,13 @@ on:
   push:
     branches: [ main ]          # redeploy whenever dashboard.py changes
   schedule:
-    - cron: "*/15 * * * *"      # refresh the data every 15 min (GitHub best-effort)
+    - cron: "*/5 * * * *"       # best-effort backup; GitHub often skips it (see below).
+  repository_dispatch:          # THE reliable driver: same 5-min heartbeat cron-job.org
+    types: [tick, build]        # already sends to fire the alerts. tick = 5-min rebuild;
+                                # build = optional dedicated 2-min poke (dormant until a
+                                # 2-min cron job sends it). GitHub's own scheduler
+                                # de-prioritises low-traffic repos and skips for hours,
+                                # so the tick — not `schedule` — is what keeps data fresh.
 
 # GitHub Pages deployment needs these permissions + an OIDC token.
 permissions:
