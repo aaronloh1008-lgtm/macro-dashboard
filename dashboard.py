@@ -894,7 +894,7 @@ def build():
             market("Gold",          "GC=F",    money0, comment="COMEX front-month"),
             market("Silver",        "SI=F",    money2, comment="COMEX front-month"),
             market("S&P 500",       "^GSPC",   num2),
-            market("Bitcoin",       "BTC-USD", money0, cg_id="bitcoin", comment="24h"),
+            market("Bitcoin",       "BTC-USD", money0, comment="24h"),
             market("Brent Crude",   "BZ=F",    money2),
             yield_row("10Y UST Yield", *cnbc_yield("US10Y")),
             yield_row("2Y UST Yield",  *cnbc_yield("US2Y")),
@@ -1009,25 +1009,43 @@ function t(){document.getElementById('clk').textContent=
 new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 t();setInterval(t,1000);
 // Countdown — anchored to this page's build timestamp in both modes:
-//  • Übersicht widget (inFrame): counts down, holds at "refreshing…" when done
-//    (Übersicht reloads the iframe itself — no location.reload() needed).
-//  • Web / PWA (not inFrame): same countdown, but fires location.reload() at 0
-//    so the browser fetches the freshly built page from GitHub Pages.
+//  • Übersicht widget (inFrame): counts down, holds at "refreshing…" when done;
+//    Übersicht reloads the iframe itself, so we never call location.reload().
+//  • Web / PWA (not inFrame): counts down, then at 0 POLLS the server for a
+//    genuinely newer build before reloading. This avoids a reload loop when the
+//    browser hits 0 before GitHub has finished publishing the next build (the
+//    page would otherwise reload into the same expired build over and over).
 //  Both modes stay honest after sleep/wake: no phantom resets.
 (function(){
+  var builtEl=document.getElementById('built-ts');
   var el=document.getElementById('countdown');
   var inFrame=window.self!==window.top;
   var INTERVAL=300;
-  var built=new Date(document.getElementById('built-ts').dataset.ts);
+  var myTs=builtEl.dataset.ts;
+  var built=new Date(myTs);
+  function fmt(rem){var m=Math.floor(rem/60),s=rem%60;return m+':'+(s<10?'0':'')+s;}
+  // Web/PWA only: once expired, check the live page (cache-busted) and reload
+  // ONLY when its build-ts differs from ours, i.e. GitHub has published fresh
+  // data. Otherwise wait and check again — poll, don't spin.
+  var polling=false;
+  function poll(){
+    fetch(location.pathname+'?_='+Date.now(),{cache:'no-store'})
+      .then(function(r){return r.text();})
+      .then(function(html){
+        var m=html.match(/id="built-ts"[^>]*data-ts="([^"]+)"/);
+        if(m && m[1]!==myTs){ location.reload(); }
+        else { setTimeout(poll,15000); }
+      })
+      .catch(function(){ setTimeout(poll,15000); });
+  }
   function cd(){
     var rem=INTERVAL-Math.floor((Date.now()-built.getTime())/1000);
     if(rem<=0){
       el.textContent='refreshing…';
-      if(!inFrame) location.reload();
+      if(!inFrame && !polling){ polling=true; poll(); }
       return;
     }
-    var m=Math.floor(rem/60), s=rem%60;
-    el.textContent=m+':'+(s<10?'0':'')+s;
+    el.textContent=fmt(rem);
   }
   cd();setInterval(cd,1000);
 })();
