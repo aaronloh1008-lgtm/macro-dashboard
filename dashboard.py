@@ -33,7 +33,7 @@ TIMEOUT = int(os.environ.get("DASH_TIMEOUT", "25"))
 RETRIES = int(os.environ.get("DASH_RETRIES", "2"))
 _SSL = ssl.create_default_context()
 from datetime import timedelta
-NOW = datetime.now(tz=timezone.utc) + timedelta(hours=8)  # SGT = UTC+8
+NOW = datetime.now(tz=timezone.utc) + timedelta(hours=8)  # SGT = UTC+8 (timezone-independent)
 NOW_ISO = NOW.strftime("%Y-%m-%d %H:%M")
 NOW_TS  = NOW.strftime("%Y-%m-%dT%H:%M:%S")  # WebKit-safe ISO (countdown anchor)
 TODAY = date.today()
@@ -269,22 +269,36 @@ def target_phrase(v, target):
 # hand-maintained date lists (which drift and silently go wrong). Each key maps
 # to a TE page whose calendar table carries the actual past & scheduled dates.
 _SCHED_SLUG = {
-    "cpi":  "united-states/inflation-cpi",
-    "pce":  "united-states/pce-price-index-annual-change",
-    "gdp":  "united-states/gdp-growth",
-    "jobs": "united-states/non-farm-payrolls",
-    "fomc": "united-states/interest-rate",
-    "ecb":  "euro-area/interest-rate",
-    "boe":  "united-kingdom/interest-rate",
-    "boj":  "japan/interest-rate",
-    "bok":  "south-korea/interest-rate",
+    "cpi":   "united-states/inflation-cpi",
+    "pce":   "united-states/pce-price-index-annual-change",
+    "gdp":   "united-states/gdp-growth",
+    "jobs":  "united-states/non-farm-payrolls",
+    "fomc":  "united-states/interest-rate",
+    # ECB dates come from the DEPOSIT-facility page: its calendar lists the next
+    # scheduled decisions (Jul/Sep/Oct), whereas the main-refi "interest-rate"
+    # page only carries past decisions + speeches, so it never yields a "Next:".
+    "ecb":   "euro-area/deposit-interest-rate",
+    "boe":   "united-kingdom/interest-rate",
+    "boj":   "japan/interest-rate",
+    "bok":   "south-korea/interest-rate",
+    "ukcpi": "united-kingdom/inflation-cpi",
+    "ezgdp": "euro-area/gdp-growth-annual",
 }
 _CB_KEYS = {"fomc", "ecb", "boe", "boj", "bok"}
-# Rate rows whose TE decision calendar may be spliced into the BIS value when a
-# decision posts before BIS updates. ECB is excluded on purpose: its TE page tracks
-# the main-refi rate, but we display the BIS deposit rate (the headline policy rate).
-# Fed is handled in fed_rate() (range, not a single value).
-_RATE_SPLICE = {"boj", "bok", "boe"}
+# Event-row keyword used to isolate genuine rate-decision rows on a CB page.
+# Default is "interest rate decision"; ECB's deposit page labels them differently.
+_CB_DECISION_KW = {"ecb": "deposit facility"}
+# Rate rows whose decision is spliced from a TE page into the slower BIS value when a
+# decision posts before BIS updates. Maps schedule key -> (TE slug, event keyword).
+# ECB is special: its release DATES come from the main-refi "interest-rate" page, but
+# the value we DISPLAY is the deposit facility rate, so the value is read from the
+# deposit-rate page (keyword "deposit facility"). Fed is handled in fed_rate().
+_RATE_SPLICE = {
+    "boj": ("japan/interest-rate",            "interest rate"),
+    "bok": ("south-korea/interest-rate",      "interest rate"),
+    "boe": ("united-kingdom/interest-rate",   "interest rate"),
+    "ecb": ("euro-area/deposit-interest-rate", "deposit facility"),
+}
 _sched_cache = {}
 def sched_dates(key):
     """Sorted release/decision dates for a key, parsed from its TE calendar.
@@ -294,15 +308,32 @@ def sched_dates(key):
     if key not in _sched_cache:
         rows = te_calendar(_TE_BASE + _SCHED_SLUG[key])
         if key in _CB_KEYS:
-            rows = [r for r in rows if "interest rate decision" in (r[6] or "").lower()]
+            kw = _CB_DECISION_KW.get(key, "interest rate decision")
+            rows = [r for r in rows if kw in (r[6] or "").lower()]
         _sched_cache[key] = sorted({r[0] for r in rows})
     return _sched_cache[key]
 def release_info(key):
+    """Return (last_released_iso, next_scheduled_iso).
+    A date scheduled for TODAY counts as 'last' only once an actual has posted;
+    until then it is treated as 'next' so the date column stays on the previous release."""
+    if key not in _SCHED_SLUG: return ("", "")
+    today_iso = TODAY.isoformat()
+    rows = te_calendar(_TE_BASE + _SCHED_SLUG[key])
+    if key in _CB_KEYS:
+        kw = _CB_DECISION_KW.get(key, "interest rate decision")
+        rows = [r for r in rows if kw in (r[6] or "").lower()]
     last = nxt = ""
-    for d in sched_dates(key):
-        dd = parse_iso(d)
-        if dd and dd <= TODAY: last = d
-        elif dd and dd > TODAY and not nxt: nxt = d
+    for r in rows:
+        d, actual = r[0], r[2]
+        if d < today_iso:
+            if d > last: last = d
+        elif d == today_iso:
+            if actual:           # released today -> treat as last
+                if d > last: last = d
+            elif not nxt:        # scheduled today, not yet out -> treat as next
+                nxt = d
+        elif not nxt:
+            nxt = d
     return last, nxt
 def next_note(key):
     _, n = release_info(key); return f"Next: {pretty_date(n)}" if n else ""
@@ -351,6 +382,17 @@ def market(label, symbol, fmt, *, fred_id="", comment="", cg_id=""):
     if p is None: return amber(label, "source unavailable")
     return {"label": label, "disp": fmt(p), "tag": "", "date": pretty_date(iso),
             "comment": comment, "chg": chg, "chgpct": True, "source": "live"}
+
+def vol_index(label, symbol, *, comment=""):
+    """A volatility / risk gauge (VIX, VVIX, SKEW, MOVE) from Yahoo. Shown like a
+    market quote but with INVERTED change colour — rising vol = red (risk-off /
+    stress), falling vol = green (calm) — since for these gauges 'up' is the
+    risk-negative move, not a gain."""
+    p, iso, chg = yahoo_quote(symbol)
+    if p is None:
+        return amber(label, "source unavailable")
+    return {"label": label, "disp": num2(p), "tag": "", "date": pretty_date(iso),
+            "comment": comment, "chg": chg, "chgpct": True, "invert": True, "source": "live"}
 
 _CNBC = {}
 def cnbc_yield(symbol):
@@ -467,7 +509,8 @@ def macro(label, fetch, fmt, *, kind="rate", target=None, sched="", quarterly=Fa
     # it post-dates the BIS value feed, so a hike/cut shows the moment it's decided.
     if kind == "rate" and sched in _RATE_SPLICE and series:
         try:
-            dec = te_decision_actual(_TE_BASE + _SCHED_SLUG[sched])
+            slug, kw = _RATE_SPLICE[sched]
+            dec = te_decision_actual(_TE_BASE + slug, kw)
             if dec and dec[0] > series[-1][0]:
                 series = series + [dec]
         except Exception as e:
@@ -560,12 +603,22 @@ def te_consensus(url, ref_iso=""):
             return r[4]                                      # consensus cell
     return released[-1][4] if released else ""
 
+def _period_month(period):
+    """First calendar month (1-12) of a TE reference-period label:
+    'May'->5, 'Q1'->1, 'Q2'->4, 'Q4'->10. None if unrecognised."""
+    p = (period or "").strip().upper()
+    if len(p) >= 2 and p[0] == "Q" and p[1].isdigit():
+        q = int(p[1])
+        return (q - 1) * 3 + 1 if 1 <= q <= 4 else None
+    return _MON3.get(p[:3])
+
 def te_latest_actual(url):
     """Latest already-released calendar row as (ref_iso, value), or None.
-    Used to splice a just-published figure into a slower value feed (FRED lags the
-    official press release by hours). ref_iso is the reference period's
-    first-of-month, derived from the release date + period label; value is parsed
-    from the Actual cell (handles %, K/M suffixes, commas, signs)."""
+    Used to splice a just-published figure into a slower value feed (FRED/Eurostat
+    lag the official press release by hours). ref_iso is the reference period's
+    first-of-month (monthly) or first-of-quarter (quarterly 'Q1'/'Q2'…), derived
+    from the release date + period label; value is parsed from the Actual cell
+    (handles %, K/M suffixes, commas, signs)."""
     rows = te_calendar(url)
     if not rows: return None
     today = TODAY.isoformat()
@@ -574,7 +627,7 @@ def te_latest_actual(url):
     rel_date, period, actual = released[-1][0], released[-1][1], released[-1][2]
     m = re.search(r"-?\d+(?:\.\d+)?", actual.replace(",", ""))
     rd = parse_iso(rel_date)
-    mon = _MON3.get(period[:3].upper())
+    mon = _period_month(period)
     if not (m and rd and mon): return None
     val = float(m.group())
     up = actual.upper()
@@ -583,14 +636,16 @@ def te_latest_actual(url):
     yr = rd.year - (1 if mon > rd.month else 0)
     return (f"{yr}-{mon:02d}-01", val)
 
-def te_decision_actual(url):
+def te_decision_actual(url, keyword="interest rate"):
     """Latest already-occurred rate decision as (date_iso, rate), or None. Keyed on
     the decision DATE (rate decisions carry no monthly reference period). Used to
-    splice a just-decided policy rate into the slower BIS value feed."""
+    splice a just-decided policy rate into the slower BIS value feed. `keyword`
+    selects the decision rows on the page — ECB's displayed value is the 'deposit
+    facility' rate, not the main-refi 'interest rate' row."""
     rows = te_calendar(url)
     if not rows: return None
     today = TODAY.isoformat()
-    dec = [r for r in rows if "interest rate" in (r[6] or "").lower()
+    dec = [r for r in rows if keyword in (r[6] or "").lower()
            and r[0] <= today and r[2]]                       # decided, has an Actual
     if not dec: return None
     date_iso, actual = dec[-1][0], dec[-1][2]
@@ -612,28 +667,27 @@ def te_indicator(url):
     if not m: return (None, None, "", "", "")
     desc = m.group(1)
     m1 = re.search(r"(?:increased|decreased|rose|fell|remained unchanged|was|stood) "
-                   r"(?:to|at) ([\d.]+) percent in ([A-Za-z]+)", desc)
+                   r"(?:to|at) ([\d.]+) (?:percent|points) in ([A-Za-z]+)", desc)
     if not m1: return (None, None, "", "", "")
     latest = float(m1.group(1))
     lmon = _MON3.get(m1.group(2)[:3].upper())
     if not lmon: return (None, None, "", "", "")
-    m2 = re.search(r"from ([\d.]+) percent in ([A-Za-z]+)(?: of (\d{4}))?", desc)
+    m2 = re.search(r"from ([\d.]+) (?:percent|points) in ([A-Za-z]+)(?: of (\d{4}))?", desc)
     prev = float(m2.group(1)) if m2 else None
     if m2 and m2.group(3):
         pmon = _MON3.get(m2.group(2)[:3].upper())
         ly = int(m2.group(3)) + (1 if (pmon and pmon > lmon) else 0)
     else:
         ly = TODAY.year - (1 if lmon > TODAY.month else 0)
-    # calendar table: current release = latest date before today; next = first on/after
+    # calendar table: current release = latest date with actual (or before today);
+    # next = first future date, or today if today's actual hasn't posted yet.
     rel_iso = next_iso = ""
-    i = raw.find('id="calendar-table"')
-    if i >= 0:
-        seg = raw[i:raw.find("</table>", i)]
-        dates = sorted(set(re.findall(r"20\d\d-[01]\d-[0-3]\d", seg)))
-        past = [d for d in dates if d < TODAY.isoformat()]
-        fut = [d for d in dates if d >= TODAY.isoformat()]
-        if past: rel_iso = past[-1]
-        if fut: next_iso = fut[0]
+    rows_cal = te_calendar(url)   # already cached via _te_page
+    today_iso = TODAY.isoformat()
+    past_d = sorted({r[0] for r in rows_cal if r[0] < today_iso or (r[0] == today_iso and r[2])})
+    fut_d  = sorted({r[0] for r in rows_cal if r[0] > today_iso or (r[0] == today_iso and not r[2])})
+    if past_d: rel_iso  = past_d[-1]
+    if fut_d:  next_iso = fut_d[0]
     return (latest, prev, f"{ly}-{lmon:02d}-01", rel_iso, next_iso)
 
 def te_previous(url, ref_iso=""):
@@ -673,6 +727,101 @@ def te_row(label, url, *, target=None, max_age=130):
     return {"label": label, "disp": pct2(latest), "tag": month_tag(iso),
             "date": date_col, "comment": "; ".join(facts), "source": "live"}
 
+def pmi_index(label, url, *, max_age=70):
+    """A diffusion-index PMI in points (not a percent) from Trading Economics —
+    e.g. US ISM Manufacturing (TE 'business-confidence') or the euro-area PMIs.
+    >50 signals expansion, <50 contraction. Two paths:
+      • Pages WITH a release-calendar widget (US ISM) → full row with release date,
+        consensus and 'Next:'. Today counts as released only once its Actual prints.
+      • Pages WITHOUT one (TE's euro-area composite/services/mfg PMI pages have no
+        calendar) → fall back to the meta-description sentence for the value +
+        reference month; the date column shows that month and there is no 'Next:'."""
+    pm = lambda v: f"{v:.1f}"
+    def num(s):
+        m = re.search(r"-?\d+(?:\.\d+)?", (s or "").replace(",", ""))
+        return float(m.group()) if m else None
+    rows = te_calendar(url)
+    if rows:
+        today_iso = TODAY.isoformat()
+        released = sorted((r for r in rows if r[0] <= today_iso and r[2]), key=lambda r: r[0])
+        upcoming = sorted((r for r in rows if r[0] > today_iso or (r[0] == today_iso and not r[2])),
+                          key=lambda r: r[0])
+        val = num(released[-1][2]) if released else None
+        if val is not None:
+            rel_iso, period = released[-1][0], released[-1][1]
+            previous, consensus = released[-1][3], released[-1][4]
+            rd, mon = parse_iso(rel_iso), _period_month(period)   # tag = reference month, not release month
+            refp = f"{rd.year - (1 if mon > rd.month else 0)}-{mon:02d}-01" if (rd and mon) else rel_iso
+            if age_days(rel_iso) > max_age:
+                return amber(label, f"source lagged (last {pretty_month(refp)})")
+            facts = []
+            prevv = num(previous)
+            if prevv is not None:
+                facts.append(direction(val, prevv, pm))
+            if consensus.strip():
+                facts.append(f"est {consensus.strip()}")
+            facts.append("expansion" if val > 50 else "contraction" if val < 50 else "at 50")
+            next_iso = upcoming[0][0] if upcoming else ""
+            if next_iso:
+                facts.append(f"Next: {pretty_date(next_iso)}")
+            return {"label": label, "disp": pm(val), "tag": month_tag(refp),
+                    "date": pretty_date(rel_iso), "comment": "; ".join(facts), "source": "live"}
+    # No calendar widget on this TE page → meta-description fallback (value + month only).
+    latest, prev, iso, _r, _n = te_indicator(url)
+    if latest is None or not iso:
+        return amber(label, "source unavailable")
+    if age_days(iso) > max_age:
+        return amber(label, f"source lagged (last {pretty_month(iso)})")
+    facts = []
+    if prev is not None:
+        facts.append(direction(latest, prev, pm))
+    facts.append("expansion" if latest > 50 else "contraction" if latest < 50 else "at 50")
+    # No release calendar on this page → no real release date; show a dash (the
+    # reference month already rides in the tag next to the value).
+    return {"label": label, "disp": pm(latest), "tag": month_tag(iso),
+            "date": "—", "comment": "; ".join(facts), "source": "live"}
+
+def tankan(label, url, *, max_age=200):
+    """BoJ Tankan — large-manufacturers business-conditions index, which Trading
+    Economics files under Japan's 'business-confidence' slug. Unlike the PMIs it's
+    a QUARTERLY diffusion index centered on ZERO (signed: positive = more firms
+    judge conditions good than bad), so it has its own builder: signed display, a
+    quarter tag, and the quarterly freshness window. Today counts as released only
+    once its Actual prints."""
+    rows = te_calendar(url)
+    if not rows:
+        return amber(label, "source unavailable")
+    today_iso = TODAY.isoformat()
+    released = sorted((r for r in rows if r[0] <= today_iso and r[2]), key=lambda r: r[0])
+    upcoming = sorted((r for r in rows if r[0] > today_iso or (r[0] == today_iso and not r[2])),
+                      key=lambda r: r[0])
+    if not released:
+        return amber(label, "source unavailable")
+    rel_iso, period, actual, previous, consensus = released[-1][:5]
+    def num(s):
+        m = re.search(r"-?\d+(?:\.\d+)?", (s or "").replace(",", ""))
+        return float(m.group()) if m else None
+    val = num(actual)
+    if val is None:
+        return amber(label, "source unavailable")
+    rd, mon = parse_iso(rel_iso), _period_month(period)   # tag = reference quarter, not release month
+    refp = f"{rd.year - (1 if mon > rd.month else 0)}-{mon:02d}-01" if (rd and mon) else rel_iso
+    if age_days(rel_iso) > max_age:
+        return amber(label, f"source lagged (last {pretty_period(refp, quarterly=True)})")
+    sg = lambda v: f"{v:+.0f}"
+    facts = []
+    prevv = num(previous)
+    if prevv is not None:
+        facts.append(direction(val, prevv, sg))
+    cons = num(consensus)
+    if cons is not None:
+        facts.append(f"est {sg(cons)}")
+    next_iso = upcoming[0][0] if upcoming else ""
+    if next_iso:
+        facts.append(f"Next: {pretty_date(next_iso)}")
+    return {"label": label, "disp": sg(val), "tag": quarter_tag(refp),
+            "date": pretty_date(rel_iso), "comment": "; ".join(facts), "source": "live"}
+
 def fed_rate():
     """Fed funds TARGET RANGE, reconstructed from the BIS midpoint (the FOMC range
     is always 25bp wide, so midpoint ± 0.125 gives the bounds) — no slow FRED call."""
@@ -683,15 +832,23 @@ def fed_rate():
         mid, bis_date = b[-1][1], b[-1][0]
     # Splice a just-decided FOMC rate if it post-dates BIS (TE Actual = upper bound;
     # the range is always 25bp wide, so midpoint = upper − 0.125).
+    series = list(b) if b else []
     try:
         dec = te_decision_actual(_TE_BASE + _SCHED_SLUG["fomc"])
         if dec and (bis_date is None or dec[0] > bis_date):
             mid = dec[1] - 0.125
+            series = series + [(dec[0], mid)]
     except Exception as e:
         sys.stderr.write(f"[Fed rate-splice] {e}\n")
     if mid is not None:
+        facts = []
+        st = streak([v for _, v in series])
+        if st >= 3:
+            facts.append(f"unchanged {st} mo")
+        nn = next_note("fomc")
+        if nn: facts.append(nn)
         return {"label": "Fed Policy Rate", "disp": f"{mid-0.125:.2f}–{mid+0.125:.2f}%", "tag": "",
-                "date": pretty_date(last), "comment": next_note("fomc"), "source": "live"}
+                "date": pretty_date(last), "comment": "; ".join(facts), "source": "live"}
     return amber("Fed Policy Rate", "source unavailable")
 
 # ------------------------------------------------------------------ build
@@ -703,14 +860,19 @@ _TE_USED = [
     "united-states/inflation-cpi",
     "united-states/unemployment-rate",
     "united-states/non-farm-payrolls",
+    "united-states/business-confidence",  # ISM Manufacturing PMI
+    "japan/business-confidence",          # Tankan Large Manufacturers Index
     "japan/inflation-cpi",
     "euro-area/inflation-cpi",
     "euro-area/unemployment-rate",
+    "euro-area/composite-pmi",            # EZ Composite PMI (no calendar widget; meta fallback)
     "united-kingdom/inflation-cpi",
     "united-kingdom/unemployment-rate",
-    "united-states/gdp-growth",         # release-date calendars
+    "united-states/gdp-growth",         # release-date calendars + QoQ-ann actual splice
+    "euro-area/gdp-growth-annual",       # EZ GDP YoY actual splice
     "united-states/interest-rate",      # central-bank decision calendars
     "euro-area/interest-rate",
+    "euro-area/deposit-interest-rate",
     "united-kingdom/interest-rate",
     "japan/interest-rate",
     "south-korea/interest-rate",
@@ -737,23 +899,29 @@ def build():
             yield_row("10Y UST Yield", *cnbc_yield("US10Y")),
             yield_row("2Y UST Yield",  *cnbc_yield("US2Y")),
         ]),
+        ("Volatility", [
+            vol_index("VIX",  "^VIX",  comment="S&P 500 implied vol (30d)"),
+            vol_index("VVIX", "^VVIX", comment="vol of VIX"),
+            vol_index("SKEW", "^SKEW", comment="S&P 500 tail risk (100 = none)"),
+            vol_index("MOVE", "^MOVE", comment="US Treasury implied vol"),
+        ]),
         ("United States", [
             fed_rate(),
-            macro("Core PCE (YoY)", lambda: fred_series("PCEPILFE"), pct2, kind="index_yoy", target=2.0, sched="pce", editorial="Fed's preferred gauge", est_url="https://tradingeconomics.com/united-states/core-pce-price-index-annual-change"),
+            macro("Core PCE (YoY)", lambda: fred_series("PCEPILFE"), pct2, kind="index_yoy", target=2.0, sched="pce", est_url="https://tradingeconomics.com/united-states/core-pce-price-index-annual-change"),
             macro("Headline PCE (YoY)", lambda: fred_series("PCEPI"), pct2, kind="index_yoy", target=2.0, sched="pce", est_url="https://tradingeconomics.com/united-states/pce-price-index-annual-change"),
             macro("Core CPI (YoY)", lambda: fred_series("CPILFENS"), pct2, kind="index_yoy", target=2.0, sched="cpi", est_url="https://tradingeconomics.com/united-states/core-inflation-rate"),
             macro("Headline CPI (YoY)", lambda: fred_series("CPIAUCNS"), pct2, kind="index_yoy", target=2.0, sched="cpi", est_url="https://tradingeconomics.com/united-states/inflation-cpi"),
             macro("Unemployment Rate", lambda: fred_series("UNRATE"), pct2, kind="rate", sched="jobs", est_url="https://tradingeconomics.com/united-states/unemployment-rate"),
             macro("Nonfarm Payrolls (MoM)", lambda: fred_series("PAYEMS"), signed, kind="nfp_change", sched="jobs", est_url="https://tradingeconomics.com/united-states/non-farm-payrolls"),
-            macro("Real GDP (QoQ ann.)", lambda: fred_series("A191RL1Q225SBEA"), pct2, kind="yoy", quarterly=True, sched="gdp"),
-            amber("ISM Mfg PMI", "no free feed"),
+            macro("Real GDP (QoQ ann.)", lambda: fred_series("A191RL1Q225SBEA"), pct2, kind="yoy", quarterly=True, sched="gdp", est_url="https://tradingeconomics.com/united-states/gdp-growth"),
+            pmi_index("ISM Mfg PMI", "https://tradingeconomics.com/united-states/business-confidence"),
         ]),
         ("Japan", [
             macro("BoJ Policy Rate", lambda: bis_series("JP"), pct2, kind="rate", sched="boj"),
             te_row("Inflation (YoY)", "https://tradingeconomics.com/japan/inflation-cpi", target=2.0),
             yield_row("10Y JGB Yield", *cnbc_yield("JP10Y-JP")),
             yield_row("2Y JGB Yield",  *cnbc_yield("JP2Y-JP")),
-            amber("Tankan / Services PMI", "no free feed"),
+            tankan("Tankan (Lg Mfg)", "https://tradingeconomics.com/japan/business-confidence"),
         ]),
         ("South Korea", [
             macro("BoK Policy Rate", lambda: bis_series("KR"), pct2, kind="rate", sched="bok"),
@@ -762,12 +930,12 @@ def build():
             macro("ECB Policy Rate", lambda: bis_series("XM"), pct2, kind="rate", sched="ecb"),
             te_row("Inflation HICP (YoY)", "https://tradingeconomics.com/euro-area/inflation-cpi", target=2.0),
             te_row("Unemployment Rate", "https://tradingeconomics.com/euro-area/unemployment-rate"),
-            macro("Real GDP (YoY)", lambda: eurostat_series("namq_10_gdp", "unit=CLV_PCH_SM&s_adj=SCA&na_item=B1GQ&geo=EA20"), pct2, kind="yoy", quarterly=True),
-            amber("Composite PMI", "no free feed"),
+            macro("Real GDP (YoY)", lambda: eurostat_series("namq_10_gdp", "unit=CLV_PCH_SM&s_adj=SCA&na_item=B1GQ&geo=EA20"), pct2, kind="yoy", quarterly=True, sched="ezgdp", est_url="https://tradingeconomics.com/euro-area/gdp-growth-annual"),
+            pmi_index("Composite PMI", "https://tradingeconomics.com/euro-area/composite-pmi"),
         ]),
         ("United Kingdom", [
             macro("BOE Bank Rate", lambda: bis_series("GB"), pct2, kind="rate", sched="boe"),
-            macro("Inflation CPI (YoY)", lambda: ons_series("https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7g7/mm23/data"), pct2, kind="yoy", target=2.0, est_url="https://tradingeconomics.com/united-kingdom/inflation-cpi"),
+            macro("Inflation CPI (YoY)", lambda: ons_series("https://www.ons.gov.uk/economy/inflationandpriceindices/timeseries/d7g7/mm23/data"), pct2, kind="yoy", target=2.0, sched="ukcpi", est_url="https://tradingeconomics.com/united-kingdom/inflation-cpi"),
             te_row("Unemployment Rate", "https://tradingeconomics.com/united-kingdom/unemployment-rate"),
         ]),
     ]
@@ -795,54 +963,75 @@ def root_css(theme):
     return ":root{" + "".join(f"--{k.replace('_','-')}:{v};" for k, v in t.items()) + "}"
 
 CSS = """
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);
-font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",Segoe UI,Roboto,sans-serif;}
-.wrap{max-width:1000px;margin:0 auto;padding:26px 20px 60px;}
-header{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:10px;}
-h1{font-size:24px;margin:0;letter-spacing:-.3px;}
-.clock{font-variant-numeric:tabular-nums;font-size:14px;}.clock .live{color:var(--live);font-weight:600;}
-.built{color:var(--muted);font-size:12px;}
-.legend{color:var(--muted);font-size:12px;margin:6px 0 22px;}
-.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin:0 5px 0 0;vertical-align:middle;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;
+font:14px/1.4 ui-sans-serif,-apple-system,BlinkMacSystemFont,"SF Pro Text",Segoe UI,Roboto,sans-serif;
+letter-spacing:.1px;}
+.wrap{max-width:1000px;margin:0 auto;padding:0 22px 56px;}
+header{display:flex;align-items:center;justify-content:space-between;gap:14px;
+margin:0 -22px 18px;padding:15px 22px 14px;
+border-top:2px solid var(--accent);border-bottom:1px solid var(--border);}
+h1{font-size:18px;margin:0;font-weight:600;letter-spacing:.4px;text-transform:uppercase;
+display:flex;align-items:center;gap:11px;white-space:nowrap;}
+h1::before{content:"";width:9px;height:17px;background:var(--accent);border-radius:1px;flex:none;}
+.clock{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;text-align:right;line-height:1.7;}
+.clock .live{display:inline-block;background:var(--live);color:#04130a;padding:2px 7px;border-radius:3px;
+font-weight:700;font-size:10px;letter-spacing:.6px;vertical-align:middle;animation:livepulse 2.4s ease-in-out infinite;}
+#clk{color:var(--text);font-variant-numeric:tabular-nums;}
+.built{margin-top:3px;color:var(--muted);font-size:11px;}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.6}}
+.legend{color:var(--muted);font-size:11px;margin:2px 0 22px;
+font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.3px;}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin:0 5px 0 0;vertical-align:middle;}
 .dot.live{background:var(--live);} .dot.amber{background:var(--amber);}
-.legend .dot{margin-left:14px;}
-section{margin-bottom:24px;}
-h2{font-size:12px;text-transform:uppercase;letter-spacing:1.4px;color:var(--accent);
-margin:0 0 8px;padding-bottom:6px;border-bottom:1px solid var(--border);}
-table{width:100%;border-collapse:collapse;table-layout:fixed;}td{padding:9px 6px;border-bottom:1px solid var(--border);vertical-align:top;overflow:hidden;text-overflow:ellipsis;}
-.label{width:24%;}.val{width:15%;font-variant-numeric:tabular-nums;font-weight:600;white-space:nowrap;}
-.chip{background:var(--chip);border:1px solid var(--border);border-radius:6px;padding:2px 8px;
-font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:14px;}.tag{color:var(--tag);font-size:12px;margin-left:6px;}
-.date{width:15%;color:var(--muted);font-size:13px;white-space:nowrap;}
-.comment{color:var(--muted);font-size:13px;line-height:1.4;}
+.legend .dot{margin-left:16px;}
+section{margin-bottom:22px;}
+h2{font:600 11px/1 ui-monospace,"SF Mono",Menlo,monospace;text-transform:uppercase;letter-spacing:1.8px;
+color:var(--accent);margin:0 0 4px;padding:0 0 7px;border-bottom:1px solid var(--border);}
+table{width:100%;border-collapse:collapse;table-layout:fixed;}
+td{padding:7px 12px 7px 0;border-bottom:1px solid var(--border);vertical-align:baseline;overflow:hidden;text-overflow:ellipsis;}
+tr:last-child td{border-bottom:none;}
+tr:nth-child(even) td{background:rgba(255,255,255,.016);}
+.label{width:27%;white-space:nowrap;}
+.val{width:16%;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.chip{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:14px;font-weight:600;color:var(--text);letter-spacing:.2px;}
+.tag{color:var(--tag);font-size:11px;margin-left:6px;font-family:ui-monospace,"SF Mono",Menlo,monospace;}
+.date{width:14%;color:var(--muted);font-size:12px;white-space:nowrap;font-family:ui-monospace,"SF Mono",Menlo,monospace;}
+.comment{color:var(--muted);font-size:12.5px;line-height:1.35;padding-left:2px;}
 .amber .comment{color:var(--cmt-amber);font-style:italic;}
-.up{color:var(--live);font-variant-numeric:tabular-nums;} .down{color:var(--down);font-variant-numeric:tabular-nums;}
-.next{color:var(--nextc);font-weight:700;}
-@media(max-width:640px){.comment{font-size:12px}.label{width:34%}.date{display:none}}
+.up{color:var(--live);font-variant-numeric:tabular-nums;font-weight:600;} .down{color:var(--down);font-variant-numeric:tabular-nums;font-weight:600;}
+.next{color:var(--nextc);font-weight:600;}
+@media(max-width:640px){.wrap{padding:0 16px 48px;}.comment{font-size:11.5px}.label{width:38%}.date{display:none}}
 """
 CLOCK_JS = """<script>
 // Live clock
 function t(){document.getElementById('clk').textContent=
 new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 t();setInterval(t,1000);
-// Countdown — widget mode: count down; web mode: auto-reload every 5 min.
+// Countdown to next refresh — auto-detects the runtime so ONE file serves both:
+//  • Übersicht widget (rendered in an iframe): count down from 5:00, anchored to
+//    THIS page's build time. Übersicht regenerates the page on every refresh, so
+//    build-ts resets to "now" each time the data updates and the countdown restarts
+//    in lockstep. It does NOT modulo-wrap: at 0 it holds at "refreshing…" until the
+//    next real refresh (stays honest after sleep/wake or a late tick — no phantom
+//    5:00→0:00 cycles with stale data).
+//  • Plain web page (not framed): auto-reload every 60 min so fresh data is shown.
 (function(){
   var el=document.getElementById('countdown');
   var inFrame=window.self!==window.top;
   if(!inFrame){
-    // Web: auto-reload the page every 60 min so fresh data is always shown
     var RELOAD=3600;
     var secs=RELOAD;
     function tick(){
       if(secs<=0){ location.reload(); return; }
       var m=Math.floor(secs/60), s=secs%60;
-      el.textContent='refresh in '+m+':'+(s<10?'0':'')+s;
+      el.textContent=m+':'+(s<10?'0':'')+s;   // surrounding label already says "next refresh"
       secs--;
     }
     tick(); setInterval(tick,1000);
     return;
   }
-  var INTERVAL=300;
+  var INTERVAL=300; // seconds — Übersicht refreshFrequency / 1000
   var built=new Date(document.getElementById('built-ts').dataset.ts);
   function cd(){
     var rem=INTERVAL-Math.floor((Date.now()-built.getTime())/1000);
@@ -877,7 +1066,7 @@ def render(sections, theme="slate"):
                     flat = round(abs(chg), 2) == 0
                     body = f"{abs(chg):.2f}" + ("%" if r.get("chgpct") else "")
                 if flat:
-                    cbits.append(f'<span class="tag">– {body}</span>')
+                    cbits.append(f'<span class="tag">unch</span>')
                 else:
                     rising = chg >= 0
                     good = rising != bool(r.get("invert"))   # price up = good; yield up = bad
