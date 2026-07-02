@@ -1065,7 +1065,9 @@ t();setInterval(t,1000);
   function check(){
     if(busy) return;
     busy=true;
-    fetch(location.pathname+'?_='+Date.now(),{cache:'no-store'})
+    // no query-buster: GitHub Pages' CDN ignores query strings (verified) —
+    // no-store only bypasses the BROWSER cache, which is all we can control.
+    fetch(location.pathname,{cache:'no-store'})
       .then(function(r){return r.text();})
       .then(function(html){
         var m=html.match(/id="built-ts"[^>]*data-ts="([^"]+)"/);
@@ -1075,8 +1077,12 @@ t();setInterval(t,1000);
       .catch(function(){ busy=false; });
   }
   setInterval(check,15000);
-  // Coming back to the PWA after a while? Check right away, don't wait 15s.
+  // macOS App Nap / sleep suspends a hidden window's timers entirely, so the
+  // interval alone can miss builds. Any sign of life — window becoming visible,
+  // gaining focus, or being restored — triggers an immediate check.
   document.addEventListener('visibilitychange',function(){ if(!document.hidden) check(); });
+  window.addEventListener('focus',check);
+  window.addEventListener('pageshow',check);
 })();
 </script>"""
 
