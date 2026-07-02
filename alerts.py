@@ -52,15 +52,16 @@ EVENTS = [
     ("US PCE",              "united-states/pce-price-index-annual-change", None),
     ("US GDP",              "united-states/gdp-growth",                    None),
     ("US Nonfarm Payrolls", "united-states/non-farm-payrolls",             None),
+    # Same jobs report as NFP, so both nudge at the identical minute — deliberate:
+    # Aaron wants "unemployment" named explicitly, not shadowed under the NFP alert.
+    ("US Unemployment Rate","united-states/unemployment-rate",             None),
     ("US ISM Mfg PMI",      "united-states/business-confidence",           None),
     ("Fed decision",        "united-states/interest-rate",                 "interest rate decision"),
     ("ECB decision",        "euro-area/deposit-interest-rate",             "deposit facility"),
     ("BoE decision",        "united-kingdom/interest-rate",                "interest rate decision"),
     ("BoJ decision",        "japan/interest-rate",                         "interest rate decision"),
     ("BoK decision",        "south-korea/interest-rate",                   "interest rate decision"),
-    # Other dashboard data releases — full nudges + week-ahead. (US unemployment is
-    # omitted: it prints on the same jobs report as Nonfarm Payrolls, so it would
-    # double-nudge at the identical minute.)
+    # Other dashboard data releases — full nudges + week-ahead.
     ("UK CPI",              "united-kingdom/inflation-cpi",                None),
     ("EZ HICP",             "euro-area/inflation-cpi",                     None),
     ("Japan CPI",           "japan/inflation-cpi",                         None),
