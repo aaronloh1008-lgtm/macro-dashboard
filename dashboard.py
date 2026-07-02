@@ -1001,7 +1001,24 @@ tr:nth-child(even) td{background:rgba(255,255,255,.016);}
 .amber .comment{color:var(--cmt-amber);font-style:italic;}
 .up{color:var(--live);font-variant-numeric:tabular-nums;font-weight:600;} .down{color:var(--down);font-variant-numeric:tabular-nums;font-weight:600;}
 .next{color:var(--nextc);font-weight:600;}
-@media(max-width:640px){.wrap{padding:0 16px 48px;}.comment{font-size:11.5px}.label{width:38%}.date{display:none}}
+/* Phone layout: stack the header (nowrap title + clock can't share 390px),
+   left-align the clock block, hide the date column, and rebalance label/val
+   so prices ("$60,860", "+172,000 May") never ellipsis-truncate. The 680px
+   Übersicht widget never triggers this query. */
+@media(max-width:640px){
+.wrap{padding:0 14px 48px;}
+header{flex-direction:column;align-items:flex-start;gap:8px;margin:0 -14px 16px;padding:12px 14px;}
+h1{font-size:15px;}
+.clock{text-align:left;line-height:1.5;}
+.built{margin-top:2px;}
+body{font-size:13px;}
+.chip{font-size:13px;}
+.comment{font-size:11.5px;}
+.date{display:none;}
+/* wrap, never ellipsis: long labels ("Nonfarm Payrolls (MoM)") take two lines */
+.label{width:34%;white-space:normal;}
+.val{width:30%;white-space:normal;}
+}
 """
 CLOCK_JS = """<script>
 // Live clock
