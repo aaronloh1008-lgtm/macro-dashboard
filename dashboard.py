@@ -1008,46 +1008,58 @@ CLOCK_JS = """<script>
 function t(){document.getElementById('clk').textContent=
 new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 t();setInterval(t,1000);
-// Countdown — anchored to this page's build timestamp in both modes:
-//  • Übersicht widget (inFrame): counts down, holds at "refreshing…" when done;
-//    Übersicht reloads the iframe itself, so we never call location.reload().
-//  • Web / PWA (not inFrame): counts down, then at 0 POLLS the server for a
-//    genuinely newer build before reloading. This avoids a reload loop when the
-//    browser hits 0 before GitHub has finished publishing the next build (the
-//    page would otherwise reload into the same expired build over and over).
-//  Both modes stay honest after sleep/wake: no phantom resets.
+// Freshness indicator — two honest modes:
+//  • Übersicht widget (inFrame): the widget rebuilds locally on a fixed 5-min
+//    clock (refreshFrequency), so a real countdown is accurate there. Holds at
+//    "refreshing…" when done; Übersicht swaps the iframe itself.
+//  • Web / PWA (not inFrame): NO countdown — a countdown can only guess when
+//    GitHub will finish publishing. Instead we poll the server every 15s (and
+//    immediately when the app returns to the foreground) and reload THE MOMENT
+//    a newer build exists. The reload is caused by the data landing, so it is
+//    synced by construction. The label shows true data age: "live — updated Xs ago".
 (function(){
   var builtEl=document.getElementById('built-ts');
   var el=document.getElementById('countdown');
+  var label=document.getElementById('cd-label');
   var inFrame=window.self!==window.top;
-  var INTERVAL=300;
   var myTs=builtEl.dataset.ts;
   var built=new Date(myTs);
-  function fmt(rem){var m=Math.floor(rem/60),s=rem%60;return m+':'+(s<10?'0':'')+s;}
-  // Web/PWA only: once expired, check the live page (cache-busted) and reload
-  // ONLY when its build-ts differs from ours, i.e. GitHub has published fresh
-  // data. Otherwise wait and check again — poll, don't spin.
-  var polling=false;
-  function poll(){
+  if(inFrame){
+    var INTERVAL=300;   // matches the widget's 5-min refreshFrequency
+    function fmt(rem){var m=Math.floor(rem/60),s=rem%60;return m+':'+(s<10?'0':'')+s;}
+    function cd(){
+      var rem=INTERVAL-Math.floor((Date.now()-built.getTime())/1000);
+      el.textContent=rem<=0?'refreshing…':fmt(rem);
+    }
+    cd();setInterval(cd,1000);
+    return;
+  }
+  // Web/PWA: show the data's true age, ticking every second.
+  if(label){label.textContent='live —';}
+  function age(){
+    var s=Math.floor((Date.now()-built.getTime())/1000);
+    if(s<0)s=0;
+    el.textContent='updated '+(s<60?s+'s':Math.floor(s/60)+'m '+(s%60)+'s')+' ago';
+  }
+  age();setInterval(age,1000);
+  // Poll for a newer build; reload the instant one is published. busy-guard
+  // prevents overlapping fetches (e.g. interval tick + visibility wake).
+  var busy=false;
+  function check(){
+    if(busy) return;
+    busy=true;
     fetch(location.pathname+'?_='+Date.now(),{cache:'no-store'})
       .then(function(r){return r.text();})
       .then(function(html){
         var m=html.match(/id="built-ts"[^>]*data-ts="([^"]+)"/);
-        if(m && m[1]!==myTs){ location.reload(); }
-        else { setTimeout(poll,15000); }
+        if(m && m[1]!==myTs){ location.reload(); return; }
+        busy=false;
       })
-      .catch(function(){ setTimeout(poll,15000); });
+      .catch(function(){ busy=false; });
   }
-  function cd(){
-    var rem=INTERVAL-Math.floor((Date.now()-built.getTime())/1000);
-    if(rem<=0){
-      el.textContent='refreshing…';
-      if(!inFrame && !polling){ polling=true; poll(); }
-      return;
-    }
-    el.textContent=fmt(rem);
-  }
-  cd();setInterval(cd,1000);
+  setInterval(check,15000);
+  // Coming back to the PWA after a while? Check right away, don't wait 15s.
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden) check(); });
 })();
 </script>"""
 
@@ -1107,7 +1119,7 @@ def render(sections, theme="slate"):
 <body><div class="wrap">
 <header><h1>Macro &amp; Markets Dashboard</h1>
 <div class="clock"><span class="live">●&nbsp;LIVE</span>&nbsp;<span id="clk">--:--:--</span>
-<div class="built" id="built-ts" data-ts="{NOW_TS}">data as of {NOW_ISO} &nbsp;·&nbsp; next refresh <span id="countdown">5:00</span></div></div></header>
+<div class="built" id="built-ts" data-ts="{NOW_TS}">data as of {NOW_ISO} &nbsp;·&nbsp; <span id="cd-label">next refresh</span> <span id="countdown">5:00</span></div></div></header>
 <div class="legend"><span class="dot live"></span>live
 <span class="dot amber"></span>manual input / verify data</div>
 {''.join(parts)}
