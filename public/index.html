@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Macro &amp; Markets Dashboard</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Macro">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<style>
+/* Boot styling only — the real CSS arrives with the data. */
+body{margin:0;background:#000;color:#888;font:14px/1.4 ui-monospace,"SF Mono",Menlo,monospace;}
+#boot{padding:40px 22px;}
+</style>
+<style id="live-style"></style>
+</head>
+<body>
+<div id="boot">loading latest data…</div>
+<script>
+// STATIC SHELL — deployed to GitHub Pages only when code changes.
+//
+// Why this exists: deploying the whole site every 5 minutes wedged GitHub
+// Pages' publishing pipeline twice (deployments report success but the served
+// content freezes for hours). So the site itself is now static, and the DATA
+// travels a separate road with no deploy pipeline at all: a GitHub Actions
+// bake force-pushes the generated page to the `live` branch every 5 minutes,
+// and this shell fetches it from raw.githubusercontent.com (CORS-open,
+// ~5-minute CDN cache) and swaps it into the DOM. No deploys → nothing to wedge.
+//
+// The fetched file is the complete self-contained dashboard page (unchanged —
+// the Übersicht widget still loads it directly). This shell strips its inert
+// <script> tags and owns all behavior itself: clock, "updated Xs ago" ticker,
+// and the 60s data poll. DOM lookups happen fresh on every tick because each
+// data swap replaces the nodes.
+(function(){
+  var RAW='https://raw.githubusercontent.com/aaronloh1008-lgtm/macro-dashboard/live/macro_dashboard.html';
+  var POLL_MS=60000;
+  var curTs='';
+  function apply(doc){
+    var b=doc.getElementById('built-ts');
+    if(!b) return false;
+    var ts=b.dataset.ts;
+    if(ts===curTs) return false;
+    var css='';
+    doc.querySelectorAll('style').forEach(function(s){css+=s.textContent;});
+    document.getElementById('live-style').textContent=css;
+    doc.body.querySelectorAll('script').forEach(function(s){s.remove();});
+    // innerHTML swap preserves window scroll position — refreshes no longer
+    // throw the reader back to the top.
+    document.body.innerHTML=doc.body.innerHTML;
+    curTs=ts;
+    var lbl=document.getElementById('cd-label');
+    if(lbl) lbl.textContent='live —';
+    return true;
+  }
+  function tick(){
+    var c=document.getElementById('clk');
+    if(c) c.textContent=new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    var b=document.getElementById('built-ts');
+    var el=document.getElementById('countdown');
+    if(b&&el){
+      var s=Math.floor((Date.now()-new Date(b.dataset.ts).getTime())/1000);
+      if(s<0)s=0;
+      el.textContent='updated '+(s<60?s+'s':Math.floor(s/60)+'m '+(s%60)+'s')+' ago';
+    }
+  }
+  setInterval(tick,1000);
+  var busy=false;
+  function poll(){
+    if(busy) return;
+    busy=true;
+    fetch(RAW,{cache:'no-store'})
+      .then(function(r){return r.text();})
+      .then(function(h){
+        apply(new DOMParser().parseFromString(h,'text/html'));
+        busy=false;
+      })
+      .catch(function(){
+        busy=false;
+        var boot=document.getElementById('boot');
+        if(boot) boot.textContent='can’t reach data — retrying…';
+      });
+  }
+  poll();
+  setInterval(poll,POLL_MS);
+  // Wake triggers: macOS App Nap / sleep suspends hidden windows' timers, so
+  // any sign of life checks immediately instead of waiting for the interval.
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden) poll(); });
+  window.addEventListener('focus',poll);
+  window.addEventListener('pageshow',poll);
+})();
+</script>
+</body>
+</html>
