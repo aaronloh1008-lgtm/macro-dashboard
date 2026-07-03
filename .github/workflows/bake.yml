@@ -1,0 +1,44 @@
+name: Bake dashboard data
+
+# Generates the dashboard every 5 minutes and force-pushes the single HTML file
+# to the `live` branch. The GitHub Pages shell fetches it from
+# raw.githubusercontent.com — a plain git push with NO Pages deployment, so the
+# Pages wedge (deploys reporting success while the served site freezes — struck
+# 2026-06-30 and 2026-07-02) is structurally impossible here.
+on:
+  workflow_dispatch:            # manual test bake from the Actions tab
+  schedule:
+    - cron: "*/5 * * * *"       # best-effort backup; GitHub often skips it
+  repository_dispatch:          # THE reliable driver: cron-job.org's 5-min tick
+    types: [tick, build]        # (same heartbeat that fires the alerts)
+
+permissions:
+  contents: write               # needed to push the live branch
+
+# One bake at a time; a stale queued bake is worthless — drop it.
+concurrency:
+  group: bake
+  cancel-in-progress: true
+
+jobs:
+  bake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Orphan branch + force-push = the live branch always holds exactly ONE
+      # commit with the freshest bake; history never grows.
+      - name: Generate and publish to live branch
+        run: |
+          python3 dashboard.py
+          git config user.name  "github-actions"
+          git config user.email "github-actions@github.com"
+          git checkout --orphan live
+          git rm -rf --cached . >/dev/null
+          git add -f macro_dashboard.html
+          git commit -m "bake $(date -u +%FT%TZ)"
+          git push -f origin live
