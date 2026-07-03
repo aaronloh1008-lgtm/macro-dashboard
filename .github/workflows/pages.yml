@@ -1,28 +1,23 @@
 name: Deploy dashboard to GitHub Pages
 
-# Builds the macro dashboard in the cloud (GitHub runners have full internet, so
-# every feed is live — unlike a laptop sandbox) and publishes it as an
-# installable PWA on GitHub Pages. Independent of Netlify / the alert bot.
+# Publishes the STATIC SHELL (public/index.html + manifest + icons) to GitHub
+# Pages. The shell contains no data — it fetches the freshest bake from the
+# `live` branch via raw.githubusercontent.com (see bake.yml).
+#
+# Deploys happen ONLY on code changes. High-frequency Pages deploys are what
+# wedged the site twice (2026-06-30 at 2-min cadence, 2026-07-02 at 5-min:
+# deployments report success while the served content freezes for hours).
+# Data freshness no longer depends on this workflow at all.
 on:
-  workflow_dispatch:            # manual run from the Actions tab
+  workflow_dispatch:            # manual redeploy from the Actions tab
   push:
-    branches: [ main ]          # redeploy whenever dashboard.py changes
-  schedule:
-    - cron: "*/5 * * * *"       # best-effort backup; GitHub often skips it (see below).
-  repository_dispatch:          # THE reliable driver: same 5-min heartbeat cron-job.org
-    types: [tick, build]        # already sends to fire the alerts. tick = 5-min rebuild;
-                                # build = optional dedicated 2-min poke (dormant until a
-                                # 2-min cron job sends it). GitHub's own scheduler
-                                # de-prioritises low-traffic repos and skips for hours,
-                                # so the tick — not `schedule` — is what keeps data fresh.
+    branches: [ main ]          # redeploy when the shell / manifest / code changes
 
-# GitHub Pages deployment needs these permissions + an OIDC token.
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Never run two Pages deploys at once; drop stale queued builds.
 concurrency:
   group: pages
   cancel-in-progress: true
@@ -36,16 +31,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      # Generate the page straight into site/index.html, then drop the PWA
-      # manifest + icons beside it so "Add to Home Screen" / "Install" works.
-      - name: Generate dashboard + assemble PWA
+      - name: Assemble static shell
         run: |
           mkdir -p site
-          DASH_OUT=site/index.html python3 dashboard.py
+          cp public/index.html site/
           cp public/manifest.webmanifest site/
           cp public/icon-192.png site/
           cp public/icon-512.png site/
