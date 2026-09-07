@@ -1,0 +1,141 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="900"><title>Macro &amp; Markets Dashboard</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Macro">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" href="icon-192.png">
+<style>:root{--bg:#000000;--border:#1b1b1b;--text:#f0f0f0;--muted:#8a8a8a;--accent:#ffa028;--live:#00d26a;--amber:#ffb000;--chip:#121212;--tag:#777777;--down:#ff453a;--cmt-amber:#d99100;--nextc:#c792ea;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;
+font:14px/1.4 ui-sans-serif,-apple-system,BlinkMacSystemFont,"SF Pro Text",Segoe UI,Roboto,sans-serif;
+letter-spacing:.1px;}
+.wrap{max-width:1000px;margin:0 auto;padding:0 22px 56px;}
+header{display:flex;align-items:center;justify-content:space-between;gap:14px;
+margin:0 -22px 18px;padding:15px 22px 14px;
+border-top:2px solid var(--accent);border-bottom:1px solid var(--border);}
+h1{font-size:18px;margin:0;font-weight:600;letter-spacing:.4px;text-transform:uppercase;
+display:flex;align-items:center;gap:11px;white-space:nowrap;}
+h1::before{content:"";width:9px;height:17px;background:var(--accent);border-radius:1px;flex:none;}
+.clock{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12px;text-align:right;line-height:1.7;}
+.clock .live{display:inline-block;background:var(--live);color:#04130a;padding:2px 7px;border-radius:3px;
+font-weight:700;font-size:10px;letter-spacing:.6px;vertical-align:middle;animation:livepulse 2.4s ease-in-out infinite;}
+#clk{color:var(--text);font-variant-numeric:tabular-nums;}
+.built{margin-top:3px;color:var(--muted);font-size:11px;}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.6}}
+.legend{color:var(--muted);font-size:11px;margin:2px 0 22px;
+font-family:ui-monospace,"SF Mono",Menlo,monospace;letter-spacing:.3px;}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin:0 5px 0 0;vertical-align:middle;}
+.dot.live{background:var(--live);} .dot.amber{background:var(--amber);}
+.legend .dot{margin-left:16px;}
+section{margin-bottom:22px;}
+h2{font:600 11px/1 ui-monospace,"SF Mono",Menlo,monospace;text-transform:uppercase;letter-spacing:1.8px;
+color:var(--accent);margin:0 0 4px;padding:0 0 7px;border-bottom:1px solid var(--border);}
+table{width:100%;border-collapse:collapse;table-layout:fixed;}
+td{padding:7px 12px 7px 0;border-bottom:1px solid var(--border);vertical-align:baseline;overflow:hidden;text-overflow:ellipsis;}
+tr:last-child td{border-bottom:none;}
+tr:nth-child(even) td{background:rgba(255,255,255,.016);}
+.label{width:27%;white-space:nowrap;}
+.val{width:16%;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.chip{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:14px;font-weight:600;color:var(--text);letter-spacing:.2px;}
+.tag{color:var(--tag);font-size:11px;margin-left:6px;font-family:ui-monospace,"SF Mono",Menlo,monospace;}
+.date{width:14%;color:var(--muted);font-size:12px;white-space:nowrap;font-family:ui-monospace,"SF Mono",Menlo,monospace;}
+.comment{color:var(--muted);font-size:12.5px;line-height:1.35;padding-left:2px;}
+.amber .comment{color:var(--cmt-amber);font-style:italic;}
+.up{color:var(--live);font-variant-numeric:tabular-nums;font-weight:600;} .down{color:var(--down);font-variant-numeric:tabular-nums;font-weight:600;}
+.next{color:var(--nextc);font-weight:600;}
+/* Phone layout: stack the header (nowrap title + clock can't share 390px),
+   left-align the clock block, hide the date column, and rebalance label/val
+   so prices ("$60,860", "+172,000 May") never ellipsis-truncate. The 680px
+   Übersicht widget never triggers this query. */
+@media(max-width:640px){
+.wrap{padding:0 14px 48px;}
+header{flex-direction:column;align-items:flex-start;gap:8px;margin:0 -14px 16px;padding:12px 14px;}
+h1{font-size:15px;}
+.clock{text-align:left;line-height:1.5;}
+.built{margin-top:2px;}
+body{font-size:13px;}
+.chip{font-size:13px;}
+.comment{font-size:11.5px;}
+.date{display:none;}
+/* wrap, never ellipsis: long labels ("Nonfarm Payrolls (MoM)") take two lines */
+.label{width:34%;white-space:normal;}
+.val{width:30%;white-space:normal;}
+}
+</style></head>
+<body><div class="wrap">
+<header><h1>Macro &amp; Markets Dashboard</h1>
+<div class="clock"><span class="live">●&nbsp;LIVE</span>&nbsp;<span id="clk">--:--:--</span>
+<div class="built" id="built-ts" data-ts="2026-09-07T13:38:20">data as of 2026-09-07 13:38 &nbsp;·&nbsp; <span id="cd-label">next refresh</span> <span id="countdown">5:00</span></div></div></header>
+<div class="legend"><span class="dot live"></span>live
+<span class="dot amber"></span>manual input / verify data</div>
+<section><h2>Markets</h2><table><tr class=""><td class="label"><span class="dot live"></span>Gold</td><td class="val"><span class="chip">$4,477</span></td><td class="date">Sep 7, 2026</td><td class="comment"><span class="up">▲ 1.06%</span> COMEX front-month</td></tr><tr class=""><td class="label"><span class="dot live"></span>Silver</td><td class="val"><span class="chip">$66.75</span></td><td class="date">Sep 7, 2026</td><td class="comment"><span class="up">▲ 1.06%</span> COMEX front-month</td></tr><tr class=""><td class="label"><span class="dot live"></span>S&P 500</td><td class="val"><span class="chip">7,718.60</span></td><td class="date">Sep 4, 2026</td><td class="comment"><span class="down">▼ 0.38%</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Bitcoin</td><td class="val"><span class="chip">$79,842</span></td><td class="date">Sep 7, 2026</td><td class="comment"><span class="up">▲ 0.02%</span> 24h</td></tr><tr class=""><td class="label"><span class="dot live"></span>Brent Crude</td><td class="val"><span class="chip">$96.28</span></td><td class="date">Sep 7, 2026</td><td class="comment"><span class="tag">unch</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>10Y UST Yield</td><td class="val"><span class="chip">4.78%</span></td><td class="date">Sep 4, 2026</td><td class="comment"><span class="down">▲ 2 bps</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>2Y UST Yield</td><td class="val"><span class="chip">4.37%</span></td><td class="date">Sep 4, 2026</td><td class="comment"><span class="down">▲ 4 bps</span></td></tr></table></section><section><h2>Volatility</h2><table><tr class=""><td class="label"><span class="dot live"></span>VIX</td><td class="val"><span class="chip">14.53</span></td><td class="date">Sep 4, 2026</td><td class="comment"><span class="down">▲ 1.47%</span> S&P 500 implied vol (30d)</td></tr><tr class=""><td class="label"><span class="dot live"></span>VVIX</td><td class="val"><span class="chip">84.42</span></td><td class="date">Sep 4, 2026</td><td class="comment"><span class="down">▲ 0.74%</span> vol of VIX</td></tr><tr class=""><td class="label"><span class="dot live"></span>SKEW</td><td class="val"><span class="chip">151.58</span></td><td class="date">Sep 4, 2026</td><td class="comment"><span class="down">▲ 0.63%</span> S&P 500 tail risk (100 = none)</td></tr><tr class=""><td class="label"><span class="dot live"></span>MOVE</td><td class="val"><span class="chip">73.10</span></td><td class="date">Sep 4, 2026</td><td class="comment"><span class="up">▼ 2.11%</span> US Treasury implied vol</td></tr></table></section><section><h2>United States</h2><table><tr class=""><td class="label"><span class="dot live"></span>Fed Policy Rate</td><td class="val"><span class="chip">3.50–3.75%</span></td><td class="date">Jul 29, 2026</td><td class="comment">unchanged 9 mo; <span class="next">Next: Sep 16, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Core PCE (YoY)</td><td class="val"><span class="chip">3.30%</span><span class="tag">Jul</span></td><td class="date">Aug 26, 2026</td><td class="comment">unchanged; est 3.3%; <span class="next">Next: Sep 30, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Headline PCE (YoY)</td><td class="val"><span class="chip">3.70%</span><span class="tag">Jul</span></td><td class="date">Aug 26, 2026</td><td class="comment">unchanged; est 3.6%; <span class="next">Next: Sep 30, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Core CPI (YoY)</td><td class="val"><span class="chip">2.50%</span><span class="tag">Jul</span></td><td class="date">Aug 12, 2026</td><td class="comment">down from 2.6%; est 2.5%; <span class="next">Next: Sep 11, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Headline CPI (YoY)</td><td class="val"><span class="chip">3.40%</span><span class="tag">Jul</span></td><td class="date">Aug 12, 2026</td><td class="comment">down from 3.5%; est 3.4%; <span class="next">Next: Sep 11, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Unemployment Rate</td><td class="val"><span class="chip">4.10%</span><span class="tag">Aug</span></td><td class="date">Sep 4, 2026</td><td class="comment">unchanged; est 4.1%; <span class="next">Next: Oct 2, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Nonfarm Payrolls (MoM)</td><td class="val"><span class="chip">+162,000</span><span class="tag">Aug</span></td><td class="date">Sep 4, 2026</td><td class="comment">est +56K; <span class="next">Next: Oct 2, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Real GDP (QoQ ann.)</td><td class="val"><span class="chip">1.50%</span><span class="tag">Q2</span></td><td class="date">Aug 26, 2026</td><td class="comment">down from 2.1%; est 1.5%; <span class="next">Next: Sep 30, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>ISM Mfg PMI</td><td class="val"><span class="chip">54.6</span><span class="tag">Aug</span></td><td class="date">Sep 1, 2026</td><td class="comment">down from 55.6; est 55.2; expansion; <span class="next">Next: Oct 1, 2026</span></td></tr></table></section><section><h2>Japan</h2><table><tr class=""><td class="label"><span class="dot live"></span>BoJ Policy Rate</td><td class="val"><span class="chip">1.00%</span><span class="tag">Aug</span></td><td class="date">Jul 31, 2026</td><td class="comment">unchanged 3 mo; <span class="next">Next: Sep 18, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Inflation (YoY)</td><td class="val"><span class="chip">1.90%</span><span class="tag">Jul</span></td><td class="date">Aug 20, 2026</td><td class="comment">up from 1.6%; near 2% target; <span class="next">Next: Sep 17, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>10Y JGB Yield</td><td class="val"><span class="chip">2.93%</span></td><td class="date">Sep 7, 2026</td><td class="comment"><span class="down">▲ 2 bps</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>2Y JGB Yield</td><td class="val"><span class="chip">1.85%</span></td><td class="date">Sep 7, 2026</td><td class="comment"><span class="down">▲ 2 bps</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Tankan (Lg Mfg)</td><td class="val"><span class="chip">+22</span><span class="tag">Q2</span></td><td class="date">Jun 30, 2026</td><td class="comment">up from +17; est +16; <span class="next">Next: Sep 30, 2026</span></td></tr></table></section><section><h2>South Korea</h2><table><tr class=""><td class="label"><span class="dot live"></span>BoK Policy Rate</td><td class="val"><span class="chip">3.00%</span><span class="tag">Aug</span></td><td class="date">Aug 27, 2026</td><td class="comment">up from 2.75%; <span class="next">Next: Oct 22, 2026</span></td></tr></table></section><section><h2>Eurozone</h2><table><tr class=""><td class="label"><span class="dot live"></span>ECB Policy Rate</td><td class="val"><span class="chip">2.25%</span><span class="tag">Aug</span></td><td class="date">Jul 23, 2026</td><td class="comment">unchanged 3 mo; <span class="next">Next: Sep 10, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Inflation HICP (YoY)</td><td class="val"><span class="chip">3.30%</span><span class="tag">Aug</span></td><td class="date">Sep 1, 2026</td><td class="comment">up from 2.9%; est 3.3%; <span class="next">Next: Sep 17, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Unemployment Rate</td><td class="val"><span class="chip">6.40%</span><span class="tag">Jul</span></td><td class="date">Sep 1, 2026</td><td class="comment">unchanged; est 6.3%; <span class="next">Next: Oct 1, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Real GDP (YoY)</td><td class="val"><span class="chip">0.90%</span><span class="tag">Q2</span></td><td class="date">Aug 14, 2026</td><td class="comment">up from 0.5%; est 1%; <span class="next">Next: Sep 7, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Composite PMI</td><td class="val"><span class="chip">52.0</span><span class="tag">Aug</span></td><td class="date">—</td><td class="comment">expansion</td></tr></table></section><section><h2>United Kingdom</h2><table><tr class=""><td class="label"><span class="dot live"></span>BOE Bank Rate</td><td class="val"><span class="chip">3.75%</span><span class="tag">Jul</span></td><td class="date">Jul 30, 2026</td><td class="comment">unchanged 9 mo; <span class="next">Next: Sep 17, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Inflation CPI (YoY)</td><td class="val"><span class="chip">2.90%</span><span class="tag">Jul</span></td><td class="date">Aug 19, 2026</td><td class="comment">up from 2.6%; est 2.9%; <span class="next">Next: Sep 16, 2026</span></td></tr><tr class=""><td class="label"><span class="dot live"></span>Unemployment Rate</td><td class="val"><span class="chip">4.90%</span><span class="tag">Jun</span></td><td class="date">Aug 18, 2026</td><td class="comment">unchanged; est 4.8%; <span class="next">Next: Sep 15, 2026</span></td></tr></table></section>
+</div><script>
+// Live clock
+function t(){document.getElementById('clk').textContent=
+new Date().toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
+t();setInterval(t,1000);
+// Freshness indicator — two honest modes:
+//  • Übersicht widget (inFrame): the widget rebuilds locally on a fixed 5-min
+//    clock (refreshFrequency), so a real countdown is accurate there. Holds at
+//    "refreshing…" when done; Übersicht swaps the iframe itself.
+//  • Web / PWA (not inFrame): NO countdown — a countdown can only guess when
+//    GitHub will finish publishing. Instead we poll the server every 15s (and
+//    immediately when the app returns to the foreground) and reload THE MOMENT
+//    a newer build exists. The reload is caused by the data landing, so it is
+//    synced by construction. The label shows true data age: "live — updated Xs ago".
+(function(){
+  var builtEl=document.getElementById('built-ts');
+  var el=document.getElementById('countdown');
+  var label=document.getElementById('cd-label');
+  var inFrame=window.self!==window.top;
+  var myTs=builtEl.dataset.ts;
+  var built=new Date(myTs);
+  if(inFrame){
+    var INTERVAL=300;   // matches the widget's 5-min refreshFrequency
+    function fmt(rem){var m=Math.floor(rem/60),s=rem%60;return m+':'+(s<10?'0':'')+s;}
+    function cd(){
+      var rem=INTERVAL-Math.floor((Date.now()-built.getTime())/1000);
+      el.textContent=rem<=0?'refreshing…':fmt(rem);
+    }
+    cd();setInterval(cd,1000);
+    return;
+  }
+  // Web/PWA: show the data's true age, ticking every second.
+  if(label){label.textContent='live —';}
+  function age(){
+    var s=Math.floor((Date.now()-built.getTime())/1000);
+    if(s<0)s=0;
+    el.textContent='updated '+(s<60?s+'s':Math.floor(s/60)+'m '+(s%60)+'s')+' ago';
+  }
+  age();setInterval(age,1000);
+  // Poll for a newer build; reload the instant one is published. busy-guard
+  // prevents overlapping fetches (e.g. interval tick + visibility wake).
+  var busy=false;
+  function check(){
+    if(busy) return;
+    busy=true;
+    // no query-buster: GitHub Pages' CDN ignores query strings (verified) —
+    // no-store only bypasses the BROWSER cache, which is all we can control.
+    fetch(location.pathname,{cache:'no-store'})
+      .then(function(r){return r.text();})
+      .then(function(html){
+        var m=html.match(/id="built-ts"[^>]*data-ts="([^"]+)"/);
+        if(m && m[1]!==myTs){ location.reload(); return; }
+        busy=false;
+      })
+      .catch(function(){ busy=false; });
+  }
+  setInterval(check,15000);
+  // macOS App Nap / sleep suspends a hidden window's timers entirely, so the
+  // interval alone can miss builds. Any sign of life — window becoming visible,
+  // gaining focus, or being restored — triggers an immediate check.
+  document.addEventListener('visibilitychange',function(){ if(!document.hidden) check(); });
+  window.addEventListener('focus',check);
+  window.addEventListener('pageshow',check);
+})();
+</script></body></html>
